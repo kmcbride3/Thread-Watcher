@@ -1,6 +1,6 @@
 import { ChannelData, Database, ThreadData } from "src/interfaces/database";
 import sql, { Database as sqliteDatabase } from "better-sqlite3";
-import { ConfigFile } from "../cnf";
+import { ConfigFile } from "../cnf/index";
 import { join } from "path";
 import { getBackupName } from "./DatabaseManager";
 

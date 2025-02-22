@@ -7,14 +7,18 @@ import {
 } from "discord.js";
 import Log75, { LogLevel } from "log75";
 import { AutoPoster } from "topgg-autoposter";
-import registerCommands, {
+import {
   checkCommandChange,
   clearCommands,
+  registerCommands
 } from "./utilities/registerCommands";
 import start from "./web";
-import cnf from "./utilities/cnf";
+import cnf from "./utilities/cnf/index";
 import { DataBases, getDatabase } from "./utilities/database/DatabaseManager";
 import scheduleBackups from "./utilities/routines/backup";
+import fs from 'fs';
+import path from 'path';
+import { stripVTControlCharacters } from 'util';
 
 const config = cnf();
 
@@ -22,7 +26,28 @@ const webhookClient = config.logWebhook
   ? new WebhookClient({ url: config.logWebhook })
   : null;
 
-const webLog = (
+const logFilePath = path.join(__dirname, '../data/thread-watcher.log');
+
+const ensureLogDirectoryExists = () => {
+  const logDir = path.dirname(logFilePath);
+  if (!fs.existsSync(logDir)) {
+    fs.mkdirSync(logDir, { recursive: true });
+  }
+};
+
+const ensureLogFileExists = () => {
+  ensureLogDirectoryExists();
+  if (!fs.existsSync(logFilePath)) {
+    fs.writeFileSync(logFilePath, '');
+  }
+};
+
+const logToFile = (message: string) => {
+  ensureLogFileExists();
+  fs.appendFileSync(logFilePath, `${new Date().toISOString()} - ${stripVTControlCharacters(message)}\n`);
+};
+
+const webLog = async (
   title: string,
   description: string | null,
   colour: ColorResolvable = Colors.Aqua,
@@ -33,6 +58,9 @@ const webLog = (
     .setTimestamp(new Date())
     .setColor(colour);
   if (description) embed.setDescription(description);
+
+  const logMessage = `${title}: ${description || ''}`;
+  await logToFile(logMessage);
 
   webhookClient.send({
     username: "Thread-Watcher",
@@ -50,7 +78,7 @@ const checkCommandRegistryParameters = async () => {
     logger.debug("no command change found");
   } else {
     try {
-      registerCommands(!args.includes("-local"), config);
+      await registerCommands(!args.includes("-local"), config);
     } catch (err) {
       logger.error(`failed to register commands.\n${err}`);
       process.exit(1);
@@ -90,7 +118,40 @@ checkCommandRegistryParameters();
 const manager = new ShardingManager("./dist/bot.js", {
   token: config.tokens.discord,
   shardArgs: args,
+  totalShards: 'auto',
+  respawn: true, // Enable automatic respawning of shards
+  mode: 'process', // Use process mode for spawning shards
+  execArgv: process.execArgv, // Pass exec arguments to the shards
+  silent: false, // Enable logging for shard processes
 });
+
+const originalConsoleError = console.error;
+console.error = (...args) => {
+  logToFile(`CONSOLE ERROR: ${args.join(' ')}`);
+  originalConsoleError(...args);
+};
+
+const originalConsoleLog = console.log;
+console.log = (...args) => {
+  logToFile(`CONSOLE LOG: ${args.join(' ')}`);
+  originalConsoleLog(...args);
+};
+
+const originalConsoleWarn = console.warn;
+console.warn = (...args) => {
+  logToFile(`CONSOLE WARN: ${args.join(' ')}`);
+  originalConsoleWarn(...args);
+};
+
+manager.on('shardCreate', shard => {
+  console.log(`Launched shard ${shard.id}`);
+});
+
+manager.spawn().catch((e) => {
+  logger.error("Failed to spawn Shard Manager. (dump below)");
+  console.error(e);
+});
+
 const database = getDatabase(DataBases[config.database.type], config);
 
 export { logger, config, webLog, webhookClient };
@@ -134,16 +195,6 @@ manager.on("shardCreate", (shard) => {
     webLog(`Shard ${shard.id} is reconnecting!`, null, Colors.DarkGreen);
   });
 });
-
-manager
-  .spawn()
-  .then(() => {
-    logger.debug("Shard Manager spawned!");
-  })
-  .catch((e) => {
-    logger.error("Failed to spawn Shard Manager. (dump below)");
-    console.error(e);
-  });
 
 const killChildren = () => {
   manager.shards.forEach((s) => s.kill());

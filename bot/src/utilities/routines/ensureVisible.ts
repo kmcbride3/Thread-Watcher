@@ -2,6 +2,7 @@ import { PermissionFlagsBits, EmbedBuilder } from "discord.js";
 import { client, logger, settings, threads } from "../../bot";
 import { ThreadData } from "../../interfaces/database";
 import { bumpAutoTime, bumpUnknown } from "../threadActions";
+import { handleApiError } from "../apiErrorHandler";
 
 const queue: ThreadData[] = [];
 const summary = {
@@ -22,7 +23,14 @@ const makeVisible = () => {
       if (!thread?.isThread()) return;
 
       if (thread.archived && thread.unarchivable)
-        await thread.setArchived(false);
+        await thread.setArchived(false).catch((err) => {
+          handleApiError(err, () => {
+            queue.unshift(t);
+            makeVisible();
+          }).catch(() => {
+            summary.fail_could_not_edit++;
+          });
+        });
 
       // If user only wants the bot to unarchive the thread without keeping it "active" we can just return here
       if (
@@ -40,13 +48,23 @@ const makeVisible = () => {
          * or setting it to 10080 if it is anything else.
          */
         if (thread.autoArchiveDuration === 10080) {
-          await thread.setAutoArchiveDuration(4320).catch(() => {
-            summary.fail_could_not_edit++;
+          await thread.setAutoArchiveDuration(4320).catch((err) => {
+            handleApiError(err, () => {
+              queue.unshift(t);
+              makeVisible();
+            }).catch(() => {
+              summary.fail_could_not_edit++;
+            });
           });
           summary.worked++;
         } else {
-          await thread.setAutoArchiveDuration(10080).catch(() => {
-            summary.fail_could_not_edit++;
+          await thread.setAutoArchiveDuration(10080).catch((err) => {
+            handleApiError(err, () => {
+              queue.unshift(t);
+              makeVisible();
+            }).catch(() => {
+              summary.fail_could_not_edit++;
+            });
           });
           summary.worked++;
         }
@@ -67,12 +85,26 @@ const makeVisible = () => {
               value: `give me \`manage threads\` in <#${thread.parentId}>.`,
             },
           ]);
-          thread.send({ embeds: [e] });
+          thread.send({ embeds: [e] }).catch((err) => {
+            handleApiError(err, () => {
+              queue.unshift(t);
+              makeVisible();
+            }).catch(() => {
+              summary.fail_could_not_edit++;
+            });
+          });
           summary.worked++;
         } else {
           thread.send(
             `**Bumping thread**\nDont mind me, i'm just making sure this thread is visible under your channel 👉😎👉\n\n*prefer silent bumps? Give me \`manage threads\` in <#${thread.parentId}>*`,
-          );
+          ).catch((err) => {
+            handleApiError(err, () => {
+              queue.unshift(t);
+              makeVisible();
+            }).catch(() => {
+              summary.fail_could_not_edit++;
+            });
+          });
           summary.worked++;
         }
       } else {

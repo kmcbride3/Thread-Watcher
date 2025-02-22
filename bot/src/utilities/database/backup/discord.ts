@@ -1,7 +1,7 @@
 import { statSync } from "fs";
 import { BackupProvider } from "../../../interfaces/database";
 import { WebhookClient } from "discord.js";
-import { ConfigFile } from "../../../utilities/cnf";
+import { ConfigFile } from "../../../utilities/cnf/index";
 
 export default class DiscordMessage implements BackupProvider {
   private webhookClient: WebhookClient;

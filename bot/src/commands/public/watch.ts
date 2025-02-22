@@ -12,6 +12,7 @@ import {
 } from "../../utilities/threadActions";
 import { Command, statusType } from "../../interfaces/command";
 import { threads } from "../../bot";
+import { handleRateLimit } from "../../utilities/apiErrorHandler";
 
 const watch: Command = {
   run: async (interaction: ChatInputCommandInteraction, buildBaseEmbed) => {
@@ -73,7 +74,12 @@ const watch: Command = {
           }
 
           if (thread.archived && thread.unarchivable) {
-            setArchive(thread);
+            setArchive(thread).catch(async (err) => {
+              if (err.code === 429) {
+                await handleRateLimit(err.retry_after);
+                setArchive(thread);
+              }
+            });
           }
         })
         .catch(() => {

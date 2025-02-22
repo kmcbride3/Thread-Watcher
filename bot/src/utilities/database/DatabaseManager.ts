@@ -1,4 +1,4 @@
-import { ConfigFile } from "../cnf";
+import { ConfigFile } from "../cnf/index";
 import DiscordMessage from "./backup/discord";
 import mysql from "./mysql";
 import sqlite from "./sqlite";

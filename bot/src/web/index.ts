@@ -1,8 +1,9 @@
 import { ShardingManager } from "discord.js";
-import express from "express";
+import express, { Request, Response } from "express";
 import { config } from "../index";
 import { databaseInstance } from "../utilities/database/DatabaseManager";
 import { logger } from "./../index";
+import { handleApiError } from "../utilities/apiErrorHandler";
 const app = express();
 
 const getStats = async (m: ShardingManager) => {
@@ -117,6 +118,8 @@ export default function start(
           guilds: typeof shard[4] === "number" ? shard[4] : 0,
         });
       }
+    }).catch((err) => {
+      handleApiError(err, statsFunc);
     });
     timesRan += 1;
   };
@@ -124,12 +127,16 @@ export default function start(
   setTimeout(statsFunc, 1000);
   setInterval(statsFunc, 1000 * 60);
 
-  app.get("/getShard", (req, res) => {
+  app.get("/getShard", (req: Request, res: Response) => {
     const { guild } = req.query;
-    if (!guild || typeof guild !== "string")
-      return res.status(400).send("missing param guild");
-    if (!/^\d{17,20}$/.test(guild))
-      return res.status(400).send("invalid guild id");
+    if (!guild || typeof guild !== "string") {
+      res.status(400).send("missing param guild");
+      return;
+    }
+    if (!/^\d{17,20}$/.test(guild)) {
+      res.status(400).send("invalid guild id");
+      return;
+    }
 
     manager
       .broadcastEval(
@@ -141,13 +148,16 @@ export default function start(
           const shardId: number = row[0] instanceof Array ? row[0][0] : 69;
 
           if (typeof row[1] === "boolean" && row[1]) {
-            return res.send({ found: true, shard: shardId });
+            res.send({ found: true, shard: shardId });
+            return;
           }
         }
-        return res.json({ found: false, shard: -1 });
+        res.json({ found: false, shard: -1 });
       })
-      .catch(() => {
-        res.status(500).send("something went wrong");
+      .catch((err) => {
+        handleApiError(err, () => {
+          res.status(500).send("something went wrong");
+        });
       });
   });
 

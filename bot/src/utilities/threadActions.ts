@@ -1,5 +1,6 @@
 import { ThreadChannel } from "discord.js";
 import { db, threads } from "../bot";
+import { handleApiError } from "./apiErrorHandler";
 
 /**
  *
@@ -32,7 +33,11 @@ export function setArchive(thread: ThreadChannel, dueArchive = 10_080) {
       .then(() => {
         let DArchive = thread.autoArchiveDuration;
         if (thread.manageable) {
-          thread.setAutoArchiveDuration(dueArchive);
+          thread.setAutoArchiveDuration(dueArchive).catch((err) => {
+            handleApiError(err, () => setArchive(thread, dueArchive))
+              .then(resolve)
+              .catch(reject);
+          });
           DArchive = dueArchive;
         }
         db.updateDueArchive(thread.id, dueArchiveTimestamp(DArchive || 0))
@@ -77,27 +82,29 @@ export function addThread(
         });
         resolve();
       })
-      .catch(() => {
-        reject();
+      .catch((err) => {
+        handleApiError(err, () => addThread(id, dueArchive, guildID))
+          .then(resolve)
+          .catch(reject);
       });
   });
 }
 
 export function removeThread(id: string, force = false): Promise<void> {
   return new Promise((resolve, reject) => {
-    // eslint-disable-next-line @typescript-eslint/no-unused-expressions
-    force
+    const remove = force
       ? db.deleteThread(id)
-      : db
-          .unwatchThread(id)
-          .then(() => {
-            threads.delete(id);
-            resolve();
-          })
-          .catch((e) => {
-            console.error(e);
-            reject();
-          });
+      : db.unwatchThread(id).then(() => {
+          threads.delete(id);
+        });
+
+    remove
+      .then(resolve)
+      .catch((err) => {
+        handleApiError(err, () => removeThread(id, force))
+          .then(resolve)
+          .catch(reject);
+      });
   });
 }
 
@@ -105,5 +112,7 @@ export function clearGuild(id: string): Promise<void> {
   threads.forEach((t) => {
     if (t.server == id) threads.delete(t.id);
   });
-  return db.deleteGuild(id);
+  return db.deleteGuild(id).catch((err) => {
+    handleApiError(err, () => clearGuild(id));
+  });
 }

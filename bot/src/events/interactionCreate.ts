@@ -13,6 +13,7 @@ import { ButtonInteractionQueue } from "../components/Button";
 import { ModalInteractionQueue } from "../components/Modal";
 import { StringSelectInteractionQueue } from "../components/StringSelect";
 import TwGenericComponent from "../interfaces/genericComponent";
+import { handleApiError } from "../utilities/apiErrorHandler";
 
 const handleCommands = (interaction: ChatInputCommandInteraction) => {
   const command = commands.get(interaction.commandName);
@@ -136,15 +137,19 @@ replicate: <what you did to get this error>
     `;
 
   try {
-    command.run(interaction, buildBaseEmbed).catch((e) => {
-      buildBaseEmbed("Command Error", statusType.error, {
-        ephermal: true,
-        description: `command \`${interaction.commandName}\` failed due to mysterious reasons.\n${errDetails}`,
-      });
-      logger.error(
-        `[${command.data.name}] failed on guild ${interaction.guildId}\n${e.toString()} (dump below)`,
+    command.run(interaction, buildBaseEmbed).catch((err) => {
+      handleApiError(err, () => command.run(interaction, buildBaseEmbed)).catch(
+        (e) => {
+          buildBaseEmbed("Command Error", statusType.error, {
+            ephermal: true,
+            description: `command \`${interaction.commandName}\` failed due to mysterious reasons.\n${errDetails}`,
+          });
+          logger.error(
+            `[${command.data.name}] failed on guild ${interaction.guildId}\n${e.toString()} (dump below)`,
+          );
+          console.error(e);
+        },
       );
-      console.error(e);
     });
   } catch (err) {
     logger.error(

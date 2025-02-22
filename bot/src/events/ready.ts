@@ -2,9 +2,12 @@ import { ActivityType, Client } from "discord.js";
 import { db, logger, threads } from "../bot";
 import { bumpThreadsRoutine } from "../utilities/routines/ensureVisible";
 import { ThreadData } from "src/interfaces/database";
+import { handleApiError } from "../utilities/apiErrorHandler";
 
 export default function (client: Client) {
-  logger.info("Client ready! ");
+  client.once('shardReady', (shardId) => {
+    logger.info(`Client ready on shard ${shardId}`);
+  });
 
   const loadThreads = (): Promise<ThreadData[] | void>[] => {
     const promises: Promise<ThreadData[] | void>[] = [];
@@ -14,6 +17,9 @@ export default function (client: Client) {
         .getThreads(guild.id)
         .then((res) => {
           for (const t of res) threads.set(t.id, t);
+        })
+        .catch((err) => {
+          handleApiError(err, () => loadThreads());
         });
 
       promises.push(dbPromise);
@@ -33,10 +39,12 @@ export default function (client: Client) {
   setInterval(setPresence, 1000 * 60 * 60);
 
   Promise.allSettled(loadThreads())
-    .then(bumpThreadsRoutine)
+    .then(() => {
+      bumpThreadsRoutine();
+      setInterval(bumpThreadsRoutine, 1000 * 60 * 50);
+    })
     .catch((e) => {
       logger.warn("[Ready] could not load data for some guilds");
       console.warn(e);
     });
-  setInterval(bumpThreadsRoutine, 1000 * 60 * 50);
 }

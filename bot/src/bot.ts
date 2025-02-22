@@ -1,74 +1,128 @@
-import { Client, GatewayIntentBits } from "discord.js";
+import { Client, GatewayIntentBits, RateLimitData, Options } from "discord.js";
 import Log75, { LogLevel } from "log75";
 import loadEvents from "./utilities/loadEvents";
 import loadCommands from "./utilities/loadCommands";
 import { DataBases, getDatabase } from "./utilities/database/DatabaseManager";
 import { ThreadData } from "./interfaces/database";
 import { red, green, yellow } from "ansi-colors";
-import cnf from "./utilities/cnf";
+import cnf from "./utilities/cnf/index";
 import UserSettings from "./utilities/userSettings";
+import fs from "fs";
+import path from "path";
+import { handleRateLimit } from "./utilities/apiErrorHandler";
+import { stripVTControlCharacters } from 'util';
 
 const config = cnf();
 
-const db = getDatabase(DataBases[config.database.type], config);
+const db = getDatabase(DataBases[config.database.type as keyof typeof DataBases], config);
 db.createTables();
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds],
-  // SLIM DOWN CACHE PLS PLS PLS PLS REMEMBER
-  // TODO: SLIM THIS CACHE SLIM IT DOWN STOP EATING MY MEMORY,
+  intents: [
+    GatewayIntentBits.Guilds
+  ],
+  makeCache: Options.cacheWithLimits({
+    // Disable caching for other managers
+    MessageManager: 0,
+    PresenceManager: 0,
+    UserManager: 0,
+    GuildMemberManager: 0,
+  }),
 });
 
 class log76 extends Log75 {
-  error(s: string) {
+  async error(s: string) {
     super.print(s, `${client.shard?.ids[0]} ERR`, red, console.error);
+    await logToFile(`ERROR: ${s}`);
   }
 
-  done(s: string) {
+  async done(s: string) {
     super.print(s, `${client.shard?.ids[0]} OK`, green, console.log);
+    await logToFile(`DONE: ${s}`);
   }
 
-  warn(s: string) {
+  async warn(s: string) {
     super.print(s, `${client.shard?.ids[0]} WARN`, yellow, console.warn);
+    await logToFile(`WARN: ${s}`);
   }
 }
 
 const logger = new log76(LogLevel.Debug, { color: true });
 
-/*
-    Sometimes ol' John is a silly willy and makes weird refferences that result in this file being ran without being called by
-    the shard manager. This is rather silly as this makes the code think it's able to be strong and independant (tries authing as a non-sharded bot - This is bad).
-    A very bodged fix for this is to find any orphan trying to be alive and make it not be alive anymore thanks to my special orphan killing algorith (patent pending)
+const logFilePath = path.join(__dirname, '../data/thread-watcher.log');
 
-    (I should try to find the root cause of this code being called in stand-alone mode but that is effort and I am lazy)
-*/
-let hasParent = true;
-if (!client.shard) {
-  logger.debug("👶 Orphan client detected.\n💀 Killing the orphan :D");
-  hasParent = false;
-}
+const ensureLogDirectoryExists = () => {
+  const logDir = path.dirname(logFilePath);
+  if (!fs.existsSync(logDir)) {
+    fs.mkdirSync(logDir, { recursive: true });
+  }
+};
+
+const ensureLogFileExists = () => {
+  ensureLogDirectoryExists();
+  if (!fs.existsSync(logFilePath)) {
+    fs.writeFileSync(logFilePath, '');
+  }
+};
+
+const logToFile = (message: string) => {
+  ensureLogFileExists();
+  fs.appendFileSync(logFilePath, `${new Date().toISOString()} - ${stripVTControlCharacters(message)}\n`);
+};
+
+const originalConsoleError = console.error;
+console.error = (...args) => {
+  logToFile(`CONSOLE ERROR: ${args.join(' ')}`);
+  originalConsoleError(...args);
+};
+
+const originalConsoleLog = console.log;
+console.log = (...args) => {
+  logToFile(`CONSOLE LOG: ${args.join(' ')}`);
+  originalConsoleLog(...args);
+};
+
+const originalConsoleWarn = console.warn;
+console.warn = (...args) => {
+  logToFile(`CONSOLE WARN: ${args.join(' ')}`);
+  originalConsoleWarn(...args);
+};
 
 loadEvents(client);
 const commands = loadCommands();
+
+client.on('shardDisconnect', (_event, shardId) => {
+  logger.warn(`Shard ${shardId} disconnected. Attempting to respawn...`);
+  client.shard?.respawnAll();
+});
+
+client.on('rateLimit', (info: RateLimitData) => {
+  logger.warn(`Rate limit hit: ${JSON.stringify(info)}`);
+  handleRateLimit(info.retryAfter, info.global).then(() => {
+    logger.info(`Resuming operations after rate limit delay of ${info.retryAfter}ms`);
+  });
+});
+
+client.on('error', (error) => {
+  logger.error(`Client error: ${error.message}`);
+});
 
 const threads = new Map<string, ThreadData>();
 const settings = new UserSettings(db);
 
 export { client, logger, commands, db, threads, config, settings };
 
-if (hasParent) {
-  client.login(config.tokens.discord).catch((err) => {
-    logger.error(`Could not authorise bot. ${err.toString()}`);
-    throw new Error(`Could not authorise bot. ${err.toString()}`);
-  });
+client.login(config.tokens.discord).catch((err) => {
+  logger.error(`Could not authorise bot. ${err.toString()}`);
+  throw new Error(`Could not authorise bot. ${err.toString()}`);
+});
 
-  process.on("uncaughtException", (err) => {
-    logger.error(
-      `[FATAL ERROR] shard ${client.shard?.ids[0]} encountered a fatal error. (dump below)`,
-    );
-    console.error(err);
-    throw new Error(
-      `[FATAL ERROR] shard ${client.shard?.ids[0]} encountered a fatal error. (dump below)`,
-    );
-  });
-}
+process.on("uncaughtException", (err) => {
+  logger.error(
+    `[FATAL ERROR] shard ${client.shard?.ids[0]} encountered a fatal error. (dump below)`,
+  );
+  console.error(err);
+  throw new Error(
+    `[FATAL ERROR] shard ${client.shard?.ids[0]} encountered a fatal error. (dump below)`,
+  );
+});

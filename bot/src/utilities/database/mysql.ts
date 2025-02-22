@@ -1,9 +1,9 @@
 import { ChannelData, Database, ThreadData } from "../../interfaces/database";
 import { createPool, Pool } from "mysql";
-import { ConfigFile } from "../cnf";
-import mysqldump from "mysqldump";
+import { ConfigFile } from "../cnf/index";
 import { join } from "path";
 import { getBackupName } from "./DatabaseManager";
+import { exec } from "child_process";
 
 class mysql implements Database {
   connection: Pool;
@@ -283,16 +283,18 @@ class mysql implements Database {
 
   createBackup(baseDir: string): Promise<string> {
     return new Promise((resolve, reject) => {
-      const backupPath = `${join(baseDir, getBackupName())}.db`;
-      mysqldump({
-        connection: this.connDetails,
-        dumpToFile: backupPath,
-        compressFile: false,
-      })
-        .then(() => {
-          resolve(backupPath);
-        })
-        .catch(reject);
+      const backupPath = `${join(baseDir, getBackupName())}.sql`;
+      const command = `mysqldump --host=${this.connDetails.host} --user=${this.connDetails.user} --password=${this.connDetails.password} ${this.connDetails.database} > ${backupPath}`;
+
+      exec(command, (error, stdout, stderr) => {
+        if (error) {
+          return reject(error);
+        }
+        if (stderr) {
+          return reject(new Error(stderr));
+        }
+        resolve(backupPath);
+      });
     });
   }
 }
