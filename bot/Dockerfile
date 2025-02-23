@@ -1,7 +1,7 @@
 # Multi-stage build and app-only image
 
 # Create base image with toolchain required to install dependencies
-FROM node:18-slim as builder
+FROM node:18-slim AS builder
 RUN apt-get update
 
 # Create the bot's directory
@@ -26,7 +26,7 @@ COPY ["./src/", "/usr/src/bot/src/"]
 RUN yarn run build
 
 # Create production image without including the toolchain 
-FROM gcr.io/distroless/nodejs18-debian11:nonroot as bot
+FROM gcr.io/distroless/nodejs18-debian11:nonroot AS bot
 
 # Set NODE_ENV environment variable
 ENV NODE_ENV production
@@ -41,6 +41,9 @@ COPY --chown=nonroot:nonroot --from=builder /usr/src/bot/dist /usr/src/bot/dist
 # Copy config
 COPY --chown=nonroot:nonroot --from=builder /usr/src/bot/_config.json5 /usr/src/bot/_config.json5
 COPY --chown=nonroot:nonroot --from=builder /usr/src/bot/data /usr/src/bot/data
+
+# Set permissions for the data directory
+RUN chmod -R 775 /usr/src/bot/data && chown -R nonroot:nonroot /usr/src/bot/data
 
 # Start the bot & register slash commands.
 CMD [ "./dist/index.js", "-reg_commands" ]

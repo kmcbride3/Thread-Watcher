@@ -5,7 +5,7 @@ import {
   Colors,
   ColorResolvable,
 } from "discord.js";
-import Log75, { LogLevel } from "log75";
+import { client, logger, config } from "./bot";
 import { AutoPoster } from "topgg-autoposter";
 import {
   checkCommandChange,
@@ -13,39 +13,14 @@ import {
   registerCommands
 } from "./utilities/registerCommands";
 import start from "./web";
-import cnf from "./utilities/cnf/index";
 import { DataBases, getDatabase } from "./utilities/database/DatabaseManager";
 import scheduleBackups from "./utilities/routines/backup";
-import fs from 'fs';
-import path from 'path';
-import { stripVTControlCharacters } from 'util';
-
-const config = cnf();
+import { handleApiError } from "./utilities/apiErrorHandler";
+import { logToFile } from "./utilities/fileLogger";
 
 const webhookClient = config.logWebhook
   ? new WebhookClient({ url: config.logWebhook })
   : null;
-
-const logFilePath = path.join(__dirname, '../data/thread-watcher.log');
-
-const ensureLogDirectoryExists = () => {
-  const logDir = path.dirname(logFilePath);
-  if (!fs.existsSync(logDir)) {
-    fs.mkdirSync(logDir, { recursive: true });
-  }
-};
-
-const ensureLogFileExists = () => {
-  ensureLogDirectoryExists();
-  if (!fs.existsSync(logFilePath)) {
-    fs.writeFileSync(logFilePath, '');
-  }
-};
-
-const logToFile = (message: string) => {
-  ensureLogFileExists();
-  fs.appendFileSync(logFilePath, `${new Date().toISOString()} - ${stripVTControlCharacters(message)}\n`);
-};
 
 const webLog = async (
   title: string,
@@ -70,8 +45,6 @@ const webLog = async (
 };
 
 const args = process.argv.slice(2);
-
-const logger = new Log75(LogLevel.Debug, { color: true });
 
 const checkCommandRegistryParameters = async () => {
   if (checkCommandChange()) {
@@ -114,7 +87,14 @@ const checkCommandRegistryParameters = async () => {
   }
 };
 
-checkCommandRegistryParameters();
+// Global error handlers to log unexpected errors
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled Rejection:", reason);
+});
+process.on("uncaughtException", (error) => {
+  console.error("Uncaught Exception:", error);
+});
+
 const manager = new ShardingManager("./dist/bot.js", {
   token: config.tokens.discord,
   shardArgs: args,
@@ -123,6 +103,13 @@ const manager = new ShardingManager("./dist/bot.js", {
   mode: 'process', // Use process mode for spawning shards
   execArgv: process.execArgv, // Pass exec arguments to the shards
   silent: false, // Enable logging for shard processes
+});
+
+// Listen for shard errors
+manager.on("shardCreate", (shard) => {
+  shard.on("error", (error) => {
+    logger.error(`Shard ${shard.id} encountered an error: ${error}`);
+  });
 });
 
 const originalConsoleError = console.error;
@@ -143,62 +130,64 @@ console.warn = (...args) => {
   originalConsoleWarn(...args);
 };
 
-manager.on('shardCreate', shard => {
-  console.log(`Launched shard ${shard.id}`);
-});
+client.once('ready', async () => {
+  logger.info("Bot connected successfully to the designated server(s).");
 
-manager.spawn().catch((e) => {
-  logger.error("Failed to spawn Shard Manager. (dump below)");
-  console.error(e);
+  await checkCommandRegistryParameters();
+  await manager.spawn().catch(async (e) => {
+    await handleApiError(e, () => manager.spawn());
+    logger.error("Failed to spawn Shard Manager. (dump below)");
+    console.error(e);
+  });
+
+  if (config.tokens.topgg) {
+    logger.info("Using top.gg autoposter");
+    AutoPoster(config.tokens.topgg, manager);
+  }
+
+  if (config.database.backupInterval) {
+    scheduleBackups(database);
+  }
+
+  const webserver = () => {
+    if (config.statsServer.enabled)
+      start(manager, config.statsServer.port, database);
+  };
+
+  // eslint-disable-next-line @typescript-eslint/no-empty-function
+  let timeOut = setTimeout(() => {}, 100000);
+
+  manager.on("shardCreate", (shard) => {
+    if (timeOut) clearTimeout(timeOut);
+    logger.done(`Shard with id ${shard.id} spawned!`);
+    webLog(`Shard ${shard.id} spawned!`, null);
+
+    shard.on("ready", () => {
+      webLog(`Shard ${shard.id} ready!`, null, Colors.Green);
+      timeOut = setTimeout(webserver, 1000 * 60 * 2);
+    });
+
+    shard.on("death", () => {
+      webLog(`Shard ${shard.id} died!`, null, Colors.Red);
+    });
+
+    shard.on("disconnect", () => {
+      webLog(`Shard ${shard.id} disconnected!`, null, Colors.Orange);
+    });
+
+    shard.on("reconnecting", () => {
+      webLog(`Shard ${shard.id} is reconnecting!`, null, Colors.DarkGreen);
+    });
+  });
+
+  const killChildren = () => {
+    manager.shards.forEach((s) => s.kill());
+  };
+
+  process.on("SIGABRT", killChildren);
+  process.on("SIGINT", killChildren);
 });
 
 const database = getDatabase(DataBases[config.database.type], config);
 
 export { logger, config, webLog, webhookClient };
-
-if (config.tokens.topgg) {
-  logger.info("Using top.gg autoposter");
-  AutoPoster(config.tokens.topgg, manager);
-}
-
-if (config.database.backupInterval) {
-  scheduleBackups(database);
-}
-
-const webserver = () => {
-  if (config.statsServer.enabled)
-    start(manager, config.statsServer.port, database);
-};
-
-// eslint-disable-next-line @typescript-eslint/no-empty-function
-let timeOut = setTimeout(() => {}, 100000);
-
-manager.on("shardCreate", (shard) => {
-  if (timeOut) clearTimeout(timeOut);
-  logger.done(`Shard with id ${shard.id} spawned!`);
-  webLog(`Shard ${shard.id} spawned!`, null);
-
-  shard.on("ready", () => {
-    webLog(`Shard ${shard.id} ready!`, null, Colors.Green);
-    timeOut = setTimeout(webserver, 1000 * 60 * 2);
-  });
-
-  shard.on("death", () => {
-    webLog(`Shard ${shard.id} died!`, null, Colors.Red);
-  });
-
-  shard.on("disconnect", () => {
-    webLog(`Shard ${shard.id} disconnected!`, null, Colors.Orange);
-  });
-
-  shard.on("reconnecting", () => {
-    webLog(`Shard ${shard.id} is reconnecting!`, null, Colors.DarkGreen);
-  });
-});
-
-const killChildren = () => {
-  manager.shards.forEach((s) => s.kill());
-};
-
-process.on("SIGABRT", killChildren);
-process.on("SIGINT", killChildren);

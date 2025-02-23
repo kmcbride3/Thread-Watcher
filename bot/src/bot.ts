@@ -7,10 +7,8 @@ import { ThreadData } from "./interfaces/database";
 import { red, green, yellow } from "ansi-colors";
 import cnf from "./utilities/cnf/index";
 import UserSettings from "./utilities/userSettings";
-import fs from "fs";
-import path from "path";
 import { handleRateLimit } from "./utilities/apiErrorHandler";
-import { stripVTControlCharacters } from 'util';
+import { logToFile } from "./utilities/fileLogger";
 
 const config = cnf();
 
@@ -48,27 +46,6 @@ class log76 extends Log75 {
 }
 
 const logger = new log76(LogLevel.Debug, { color: true });
-
-const logFilePath = path.join(__dirname, '../data/thread-watcher.log');
-
-const ensureLogDirectoryExists = () => {
-  const logDir = path.dirname(logFilePath);
-  if (!fs.existsSync(logDir)) {
-    fs.mkdirSync(logDir, { recursive: true });
-  }
-};
-
-const ensureLogFileExists = () => {
-  ensureLogDirectoryExists();
-  if (!fs.existsSync(logFilePath)) {
-    fs.writeFileSync(logFilePath, '');
-  }
-};
-
-const logToFile = (message: string) => {
-  ensureLogFileExists();
-  fs.appendFileSync(logFilePath, `${new Date().toISOString()} - ${stripVTControlCharacters(message)}\n`);
-};
 
 const originalConsoleError = console.error;
 console.error = (...args) => {
@@ -110,12 +87,16 @@ client.on('error', (error) => {
 const threads = new Map<string, ThreadData>();
 const settings = new UserSettings(db);
 
-export { client, logger, commands, db, threads, config, settings };
+client.once('ready', async () => {
+  logger.info("Bot connected successfully to the designated server(s).");
+});
 
 client.login(config.tokens.discord).catch((err) => {
   logger.error(`Could not authorise bot. ${err.toString()}`);
   throw new Error(`Could not authorise bot. ${err.toString()}`);
 });
+
+export { client, logger, commands, db, threads, config, settings };
 
 process.on("uncaughtException", (err) => {
   logger.error(
