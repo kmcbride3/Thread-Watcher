@@ -17,7 +17,7 @@ WORKDIR /usr/src/bot
 COPY ["package.json", "yarn.lock*", "tsconfig.json", "_config.json5", "/usr/src/bot/"]
 
 # Install only the necessary packages for build
-RUN yarn install --frozen-lockfile && yarn cache clean --force
+RUN yarn install --frozen-lockfile --production && yarn cache clean --force
 
 # Copy source code to build
 COPY ["./src/", "/usr/src/bot/src/"]
