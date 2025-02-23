@@ -25,8 +25,9 @@ export async function threadShouldBeWatched(
       const owner = thread.ownerId
         ? await thread.guild.members
             .fetch({ force: true, user: thread.ownerId })
-            // eslint-disable-next-line @typescript-eslint/no-empty-function
-            .catch(() => {})
+            .catch((error) => {
+              logger.error(`Failed to fetch thread owner: ${error}`);
+            })
         : null;
       if (!role) break;
       if (owner?.roles.cache.has(role)) rolePasses = true;
@@ -52,35 +53,33 @@ export async function threadShouldBeWatched(
   return passes;
 }
 
-export default async function (thread: ThreadChannel) {
-  // Here we check if the threads parent or the threads grandparent has an auto rule
-  // This is kinda ugly and not performant as we do 2 queries but I do not care
-  const auto =
-    (await db.getChannels(thread.guildId)).find(
-      (t) => t.id == thread.parentId,
-    ) ||
-    (await db.getChannels(thread.guildId)).find(
-      (t) => t.id == thread.parent?.parentId,
-    );
+export default function() {
+  return async function(thread: ThreadChannel) {
+    const channels = await db.getChannels(thread.guildId);
+    const auto =
+      channels.find((t) => t.id == thread.parentId) ||
+      channels.find((t) => t.id == thread.parent?.parentId);
 
-  if (!auto) return;
+    // Return early if no auto rule is found for the thread's parent or grandparent
+    if (!auto) return;
 
-  if (await threadShouldBeWatched(auto, thread)) {
-    logger.info(
-      `Automatically adding thread "${thread.id}" in ${thread.guildId}`,
-    );
-    addThread(
-      thread.id,
-      dueArchiveTimestamp(thread.autoArchiveDuration || 0) as number,
-      thread.guildId,
-    ).catch((err) => {
-      logger.error(
-        `could not add thread "${thread.id}" in ${thread.guildId}: ${err.toString()}`,
+    if (await threadShouldBeWatched(auto, thread)) {
+      logger.info(
+        `Automatically adding thread "${thread.id}" in ${thread.guildId}`,
       );
-    });
-  } else {
-    logger.info(
-      `Not adding thread "${thread.id}" in ${thread.guildId} as filters prevent it`,
-    );
-  }
+      addThread(
+        thread.id,
+        dueArchiveTimestamp(thread.autoArchiveDuration || 0) as number,
+        thread.guildId,
+      ).catch((err) => {
+        logger.error(
+          `could not add thread "${thread.id}" in ${thread.guildId}: ${err.message}`,
+        );
+      });
+    } else {
+      logger.info(
+        `Not adding thread "${thread.id}" in ${thread.guildId} as filters prevent it`,
+      );
+    }
+  };
 }

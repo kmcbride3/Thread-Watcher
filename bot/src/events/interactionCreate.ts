@@ -188,18 +188,20 @@ function handleInteraction<TInteractionType extends FunkyFella>(
   }
 }
 
-export default function (interaction: BaseInteraction) {
-  if (typeof interaction.isChatInputCommand === "function" && interaction.isChatInputCommand()) {
-    handleCommands(interaction);
-  } else if (typeof interaction.isAutocomplete === "function" && interaction.isAutocomplete()) {
-    handleAutoComplete(interaction);
-  } else if (interaction.isButton()) {
-    handleInteraction(interaction, ButtonInteractionQueue);
-  } else if (interaction.isModalSubmit()) {
-    handleInteraction(interaction, ModalInteractionQueue);
-  } else if (interaction.isAnySelectMenu()) {
-    return handleInteraction(interaction, StringSelectInteractionQueue);
-  } else {
-    logger.warn("Received an interaction that is not of a supported type.");
-  }
+export default function () {
+  return function interactionCreateHandler(interaction: BaseInteraction): void {
+    if (typeof interaction.isChatInputCommand === "function" && interaction.isChatInputCommand()) {
+      handleCommands(interaction);
+    } else if (typeof interaction.isAutocomplete === "function" && interaction.isAutocomplete()) {
+      handleAutoComplete(interaction);
+    } else if (typeof interaction.isButton === "function" && interaction.isButton()) {
+      handleInteraction(interaction, ButtonInteractionQueue);
+    } else if (typeof interaction.isModalSubmit === "function" && interaction.isModalSubmit()) {
+      handleInteraction(interaction, ModalInteractionQueue);
+    } else if (typeof interaction.isAnySelectMenu === "function" && interaction.isAnySelectMenu()) {
+      return handleInteraction(interaction, StringSelectInteractionQueue);
+    } else {
+      logger.warn("Received an interaction that is not of a supported type.");
+    }
+  };
 }

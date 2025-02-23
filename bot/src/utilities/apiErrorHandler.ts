@@ -18,10 +18,11 @@ export const handleApiError = async <T>(
   err: { code?: number; status?: number; headers?: Record<string, string>; retry_after?: number },
   retryFunction: () => Promise<T>
 ): Promise<T> => {
-  const statusCode = err?.code ?? err?.status;
-  if (statusCode === undefined) {
-    throw new Error(`Error: Status code is undefined.`);
+  if (!err || (!err.code && !err.status)) {
+    console.error("Error: Status code is undefined.");
+    return Promise.reject(new Error("Error: Status code is undefined."));
   }
+  const statusCode = err?.code ?? err?.status;
   if (statusCode === 429) {
     const retryAfter = err.headers?.['retry-after'] ?? err.retry_after ?? 10;
     const isGlobal = err.headers && err.headers['x-ratelimit-global'] === 'true';

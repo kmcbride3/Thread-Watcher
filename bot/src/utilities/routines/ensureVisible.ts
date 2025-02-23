@@ -3,6 +3,7 @@ import { client, logger, settings, threads } from "../../bot";
 import { ThreadData } from "../../interfaces/database";
 import { bumpAutoTime, bumpUnknown } from "../threadActions";
 import { handleApiError } from "../apiErrorHandler";
+import { webLog } from "../../index"; // Import the webLog function
 
 // Helper function for user-friendly summary messaging
 function buildEnsureVisibleSummary(summary: {
@@ -56,6 +57,7 @@ const makeVisible = () => {
             return Promise.resolve();
           }).catch(() => {
             summary.fail_could_not_edit++;
+            webLog("Thread Update Failed", `Failed to unarchive thread "${thread.id}" in channel "${thread.parentId}": ${err.message}`);
           });
         });
       }
@@ -80,6 +82,7 @@ const makeVisible = () => {
               return Promise.resolve();
             }).catch(() => {
               summary.fail_could_not_edit++;
+              webLog("Thread Update Failed", `Failed to set auto archive duration for thread "${thread.id}" in channel "${thread.parentId}": ${err.message}`);
             });
           });
           summary.worked++;
@@ -91,6 +94,7 @@ const makeVisible = () => {
               return Promise.resolve();
             }).catch(() => {
               summary.fail_could_not_edit++;
+              webLog("Thread Update Failed", `Failed to set auto archive duration for thread "${thread.id}" in channel "${thread.parentId}": ${err.message}`);
             });
           });
           summary.worked++;
@@ -119,6 +123,7 @@ const makeVisible = () => {
               return Promise.resolve();
             }).catch(() => {
               summary.fail_could_not_edit++;
+              webLog("Thread Update Failed", `Failed to send bump message for thread "${thread.id}" in channel "${thread.parentId}": ${err.message}`);
             });
           });
           summary.worked++;
@@ -132,12 +137,14 @@ const makeVisible = () => {
                 return Promise.resolve();
               }).catch(() => {
                 summary.fail_could_not_edit++;
+                webLog("Thread Update Failed", `Failed to send bump message for thread "${thread.id}" in channel "${thread.parentId}": ${err.message}`);
               });
             });
           summary.worked++;
         }
       } else {
         summary.failed_perms++;
+        webLog("Missing Permissions", `Missing permissions for thread "${thread.id}" in channel "${thread.parentId}"`);
       }
 
       bumpAutoTime(thread);
@@ -148,6 +155,8 @@ const makeVisible = () => {
       // (for now) we just "snooze" those for one week but it might be attractive in the future
       // to keep a track of how many revive cycles they've been unknown and pruning when they get
       // over a specific number. Would require a schema change on the db tho
+
+      webLog("Channel Not Found", `Channel not found for thread "${t.id}"`);
       bumpUnknown(t.id);
     });
 

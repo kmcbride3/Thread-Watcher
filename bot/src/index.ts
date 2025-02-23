@@ -48,7 +48,7 @@ const args = process.argv.slice(2);
 
 const checkCommandRegistryParameters = async () => {
   if (checkCommandChange()) {
-    logger.debug("no command change found");
+    logger.debug("No command changes found");
   } else {
     try {
       await registerCommands(!args.includes("-local"), config);
@@ -134,8 +134,6 @@ console.warn = (...args) => {
 };
 
 client.once('ready', async () => {
-  logger.info("Bot connected successfully to the designated server(s).");
-
   await checkCommandRegistryParameters();
   await manager.spawn().catch(async (e) => {
     await handleApiError(e, () => manager.spawn());

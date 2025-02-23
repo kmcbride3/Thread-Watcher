@@ -106,7 +106,9 @@ const threads = new Map<string, ThreadData>();
 const settings = new UserSettings(db);
 
 client.once('ready', async () => {
-  logger.info("Bot connected successfully to the designated server(s).");
+  if (client.shard) {
+    logger.info("Bot connected successfully to the designated server(s).");
+  }
 });
 
 client.login(config.tokens.discord).catch((err) => {
