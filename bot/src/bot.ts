@@ -4,7 +4,7 @@ import loadEvents from "./utilities/loadEvents"; // used to load events
 import loadCommands from "./utilities/loadCommands";
 import { DataBases, getDatabase } from "./utilities/database/DatabaseManager";
 import { ThreadData } from "./interfaces/database";
-import { red, green, yellow } from "ansi-colors"; // used in log76 class
+import { red, green, yellow, blue } from "ansi-colors"; // used in log76 class
 import cnf from "./utilities/cnf/index";
 import UserSettings from "./utilities/userSettings";
 import { handleRateLimit } from "./utilities/apiErrorHandler";
@@ -33,27 +33,35 @@ class log76 extends Log75 {
     super(level, options);
   }
 
-  // Override the print method entirely
+  // Override the print method entirely so that only the type is coloured
   print(msg: string, type: string, color: (msg: string) => string, output: (msg: string) => void): string {
-    // Simply prefix the message with the type indicator
-    const formattedMsg = `[${type}] ${msg}`;
-    output(color(formattedMsg));
+    // Use a fallback in case type is undefined
+    const typeStr = type || "UNKNOWN";
+    // Only apply colour to the type text
+    const coloredType = color(typeStr);
+    const formattedMsg = `[${coloredType}] ${msg}`;
+    output(formattedMsg);
     return formattedMsg;
   }
 
   async error(s: string) {
-    this.print(s, `${client.shard?.ids[0]} ERR`, red, console.error);
+    this.print(s, `${client.shard?.ids[0] ?? "UNKNOWN"} ERR`, red, console.error);
     await logToFile(`ERROR: ${s}`);
   }
 
   async done(s: string) {
-    this.print(s, `${client.shard?.ids[0]} OK`, green, console.log);
+    this.print(s, `${client.shard?.ids[0] ?? "UNKNOWN"} OK`, green, console.log);
     await logToFile(`DONE: ${s}`);
   }
 
   async warn(s: string) {
-    this.print(s, `${client.shard?.ids[0]} WARN`, yellow, console.warn);
+    this.print(s, `${client.shard?.ids[0] ?? "UNKNOWN"} WARN`, yellow, console.warn);
     await logToFile(`WARN: ${s}`);
+  }
+  
+  async info(s: string) {
+    this.print(s, `${client.shard?.ids[0] ?? "UNKNOWN"} INFO`, blue, console.log);
+    await logToFile(`INFO: ${s}`);
   }
 }
 

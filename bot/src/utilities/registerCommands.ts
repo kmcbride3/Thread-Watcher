@@ -49,15 +49,15 @@ export const registerCommands = async (global: boolean, config: ConfigFile) => {
     return data;
   };
 
-  const existingCommands = await rest.get(
+  const existingCommands: { name: string }[] = await rest.get(
     global
       ? Routes.applicationCommands(config.clientID)
       : Routes.applicationGuildCommands(config.clientID, config.devServer)
-  );
+  ) as { name: string }[];
 
   const newCommands = global ? publicCommands : privateCommands;
   const commandsToRegister = newCommands.filter(
-    (cmd) => !(existingCommands as any[]).some((existingCmd) => existingCmd.name === cmd.data.name)
+    (cmd) => !(existingCommands as { name: string }[]).some((existingCmd) => existingCmd.name === cmd.data.name)
   );
 
   if (commandsToRegister.length > 0) {
@@ -90,7 +90,7 @@ export function genCommandHash(writeToFile = true): string {
   const digest = hash.digest("base64");
 
   if (writeToFile) {
-    writeFileSync("./.commandshash", digest);
+    writeFileSync("./.commandshash", digest, { mode: 0o666 });
   }
 
   return digest;

@@ -58,7 +58,12 @@ const handleStats = async () => {
     const data = await (await fetch(`${API_BASE}/stats`)).json()
     if(!data) return
 
-    console.log(data)
+    // Proper logging for production
+    if (data.error) {
+        console.error("Error fetching stats:", data.error);
+    } else {
+        console.info("Stats fetched successfully");
+    }
 
     const guildCount = document.getElementById("guilds_number")
     const threadCount = document.getElementById("threads_number")
