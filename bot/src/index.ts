@@ -89,10 +89,10 @@ const checkCommandRegistryParameters = async () => {
 
 // Global error handlers to log unexpected errors
 process.on("unhandledRejection", (reason) => {
-  console.error("Unhandled Rejection:", reason);
+  logger.error(`Unhandled Rejection: ${reason}`);
 });
 process.on("uncaughtException", (error) => {
-  console.error("Uncaught Exception:", error);
+  logger.error(`Uncaught Exception: ${error}`);
 });
 
 const manager = new ShardingManager("./dist/bot.js", {
@@ -115,30 +115,12 @@ manager.on("shardCreate", (shard) => {
   });
 });
 
-const originalConsoleError = console.error;
-console.error = (...args) => {
-  logToFile(`CONSOLE ERROR: ${args.join(' ')}`);
-  originalConsoleError(...args);
-};
-
-const originalConsoleLog = console.log;
-console.log = (...args) => {
-  logToFile(`CONSOLE LOG: ${args.join(' ')}`);
-  originalConsoleLog(...args);
-};
-
-const originalConsoleWarn = console.warn;
-console.warn = (...args) => {
-  logToFile(`CONSOLE WARN: ${args.join(' ')}`);
-  originalConsoleWarn(...args);
-};
-
 client.once('ready', async () => {
   await checkCommandRegistryParameters();
   await manager.spawn().catch(async (e) => {
     await handleApiError(e, () => manager.spawn());
     logger.error("Failed to spawn Shard Manager. (dump below)");
-    console.error(e);
+    logger.error(e.toString());
   });
 
   if (config.tokens.topgg) {

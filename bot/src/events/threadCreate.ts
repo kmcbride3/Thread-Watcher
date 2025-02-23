@@ -71,7 +71,9 @@ export default function() {
         thread.id,
         dueArchiveTimestamp(thread.autoArchiveDuration || 0) as number,
         thread.guildId,
-      ).catch((err) => {
+      ).then(() => {
+        logger.done(`Thread "${thread.id}" added successfully in ${thread.guildId}`);
+      }).catch((err) => {
         logger.error(
           `could not add thread "${thread.id}" in ${thread.guildId}: ${err.message}`,
         );

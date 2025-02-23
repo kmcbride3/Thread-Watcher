@@ -1,4 +1,4 @@
-import { PermissionFlagsBits, EmbedBuilder } from "discord.js";
+import { PermissionFlagsBits, EmbedBuilder, ThreadChannel } from "discord.js";
 import { client, logger, settings, threads } from "../../bot";
 import { ThreadData } from "../../interfaces/database";
 import { bumpAutoTime, bumpUnknown } from "../threadActions";
@@ -46,18 +46,23 @@ const makeVisible = () => {
   if (!t) return (running = false);
   client.channels
     .fetch(t.id)
-    .then(async (thread) => {
+    .then(async (channel) => {
+      if (!channel || !channel.isThread()) return;
+      const thread = channel as ThreadChannel;
       if (!thread?.isThread()) return;
 
       if (thread.archived && thread.unarchivable) {
-        await thread.setArchived(false).catch((err) => {
-          handleApiError(err, () => {
+        await thread.setArchived(false).catch((err: Error) => {
+          handleApiError(err as unknown as { code?: number; status?: number; headers?: Record<string, string>; retry_after?: number }, () => {
             queue.unshift(t);
             makeVisible();
             return Promise.resolve();
           }).catch(() => {
             summary.fail_could_not_edit++;
-            webLog("Thread Update Failed", `Failed to unarchive thread "${thread.id}" in channel "${thread.parentId}": ${err.message}`);
+            webLog(
+              "Thread Update Failed",
+              `Failed to unarchive thread "${thread.id}" in channel "${thread.parentId}": ${err.message}`,
+            );
           });
         });
       }
@@ -75,8 +80,8 @@ const makeVisible = () => {
          * or setting it to 10080 if it is anything else.
          */
         if (thread.autoArchiveDuration === 10080) {
-          await thread.setAutoArchiveDuration(4320).catch((err) => {
-            handleApiError(err, () => {
+          await thread.setAutoArchiveDuration(4320).catch((err: Error) => {
+            handleApiError(err as unknown as { code?: number; status?: number; headers?: Record<string, string>; retry_after?: number }, () => {
               queue.unshift(t);
               makeVisible();
               return Promise.resolve();
@@ -87,8 +92,8 @@ const makeVisible = () => {
           });
           summary.worked++;
         } else {
-          await thread.setAutoArchiveDuration(10080).catch((err) => {
-            handleApiError(err, () => {
+          await thread.setAutoArchiveDuration(10080).catch((err: Error) => {
+            handleApiError(err as unknown as { code?: number; status?: number; headers?: Record<string, string>; retry_after?: number }, () => {
               queue.unshift(t);
               makeVisible();
               return Promise.resolve();
@@ -116,8 +121,8 @@ const makeVisible = () => {
               value: `give me \`manage threads\` in <#${thread.parentId}>.`,
             },
           ]);
-          thread.send({ embeds: [e] }).catch((err) => {
-            handleApiError(err, () => {
+          thread.send({ embeds: [e] }).catch((err: Error) => {
+            handleApiError(err as unknown as { code?: number; status?: number; headers?: Record<string, string>; retry_after?: number }, () => {
               queue.unshift(t);
               makeVisible();
               return Promise.resolve();
@@ -130,8 +135,8 @@ const makeVisible = () => {
         } else {
           thread.send(
             `**Bumping thread**\nDon't mind me, I'm just making sure this thread is visible under your channel 👉😎👉\n\n*prefer silent bumps? Give me \`manage threads\` in <#${thread.parentId}>*`,
-          ).catch((err) => {
-              handleApiError(err, () => {
+          ).catch((err: Error) => {
+              handleApiError(err as unknown as { code?: number; status?: number; headers?: Record<string, string>; retry_after?: number }, () => {
                 queue.unshift(t);
                 makeVisible();
                 return Promise.resolve();

@@ -6,7 +6,8 @@ import {
 } from "fs";
 import path from "path";
 import { REST, Routes } from "discord.js";
-import { ConfigFile } from "./cnf";
+import { ConfigFile } from "./cnf/index";
+import { logger } from "../bot";
 import { createHash } from "crypto";
 import loadCommands from "./loadCommands";
 
@@ -67,6 +68,7 @@ export const registerCommands = async (global: boolean, config: ConfigFile) => {
     await rest.put(route, {
       body: commandsToRegister.map(commandToJson),
     });
+    logger.done(`Registered ${commandsToRegister.length} commands successfully.`);
   }
 };
 
@@ -76,6 +78,7 @@ export const clearCommands = async (local: boolean, config: ConfigFile) => {
     ? Routes.applicationGuildCommands(config.clientID, config.devServer)
     : Routes.applicationCommands(config.clientID);
   await rest.put(route, { body: [] });
+  logger.done(`Cleared all ${local ? "local" : "global"} commands successfully.`);
 };
 
 export function genCommandHash(writeToFile = true): string {

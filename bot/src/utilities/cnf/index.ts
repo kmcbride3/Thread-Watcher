@@ -21,7 +21,7 @@ interface BotStyle {
     emoji: string,
 }
 
-interface ConfigFile {
+export interface ConfigFile {
     tokens: { discord: string, topgg: string },
     clientID: string,
     database: { type: "sqlite"|"mysql", options: DbOptions, backupInterval: string, backupAmount: number, backupProvider: "none"|"discord" },
@@ -31,7 +31,7 @@ interface ConfigFile {
     devServer: string,
     devServerInvite: string,
     logWebhook?: string,
-    logLevel: string,
+    logLevel: "NONE" | "ERROR" | "WARN" | "INFO" | "DEBUG",
     logToFile: boolean
 }
 
@@ -84,6 +84,9 @@ export default function (): ConfigFile {
     const reviver = (key: string, value: unknown) => validateValue(key, value)
     try {
         const config = j5Parse(readFileSync(P_J5, "utf-8"), reviver) as ConfigFile
+        if (!config.logLevel) {
+            config.logLevel = "INFO";
+        }
         return config
     } catch (error) {
         console.error("Error reading the config file:", error)

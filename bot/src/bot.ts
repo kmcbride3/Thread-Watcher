@@ -1,5 +1,5 @@
 import { Client, GatewayIntentBits, RateLimitData, Options, ShardingManager } from "discord.js";
-import Log75, { LogLevel } from "log75";
+import Log75 from "log75";
 import loadEvents from "./utilities/loadEvents";
 import loadCommands from "./utilities/loadCommands";
 
@@ -30,60 +30,93 @@ const client = new Client({
 });
 
 class log76 extends Log75 {
-  constructor(level: LogLevel, options: { color: boolean }) {
+  static LogLevel = {
+    Quiet: 0,
+    Error: 1,
+    Warn: 2,
+    Standard: 3,
+    Debug: 4,
+    Trace: 5
+  };
+
+  constructor(level: number, options: { color: boolean }) {
     super(level, options);
   }
 
   // Override print so that the shard id is only added if present and no "UNKNOWN" is shown.
   print(msg: string, type: string, color: (msg: string) => string, output: (msg: string) => void): string {
     // Use shard id if available, else empty string.
-    const shardLabel = client.shard?.ids.length ? client.shard.ids.join(", ") : "";
-    const prefix = shardLabel ? `[Shard ${shardLabel}] ` : "";
-    const formattedMsg = `${prefix}${msg}`;
+    const shardLabel = client.shard?.ids.length ? `Shard ${client.shard.ids.join(", ")}: ` : "";
+    const formattedMsg = `[${color(`${type}`)}] ${shardLabel}${msg}`;
     output(formattedMsg);
     return formattedMsg;
   }
 
   async error(s: string) {
-    this.print(s, "ERR", red, console.error);
-    if (config.logToFile) await logToFile(`ERROR: ${s}`);
+    if (logLevel >= log76.LogLevel.Error) {
+      this.print(s, "ERROR", red, originalConsoleError);
+      if (config.logToFile) await logToFile(`[ERROR] ${s}`);
+    }
   }
 
   async done(s: string) {
-    this.print(s, "OK", green, console.log);
-    if (config.logToFile) await logToFile(`DONE: ${s}`);
+    if (logLevel >= log76.LogLevel.Standard) {
+      this.print(s, "OK", green, originalConsoleLog);
+      if (config.logToFile) await logToFile(`[OK] ${s}`);
+    }
   }
 
   async warn(s: string) {
-    this.print(s, "WARN", yellow, console.warn);
-    if (config.logToFile) await logToFile(`WARN: ${s}`);
+    if (logLevel >= log76.LogLevel.Warn) {
+      this.print(s, "WARN", yellow, originalConsoleWarn);
+      if (config.logToFile) await logToFile(`[WARN] ${s}`);
+    }
   }
   
   async info(s: string) {
-    this.print(s, "INFO", blue, console.log);
-    if (config.logToFile) await logToFile(`INFO: ${s}`);
+    if (logLevel >= log76.LogLevel.Standard) {
+      this.print(s, "INFO", blue, originalConsoleInfo);
+      if (config.logToFile) await logToFile(`[INFO] ${s}`);
+    }
+  }
+
+  async debug(s: string) {
+    if (logLevel >= log76.LogLevel.Debug) {
+      this.print(s, "DEBUG", blue, originalConsoleLog);
+      if (config.logToFile) await logToFile(`[DEBUG] ${s}`);
+    }
+  }
+
+  async trace(s: string) {
+    this.print(s, "TRACE", blue, originalConsoleTrace);
   }
 }
 
 // Set log level from config
-const logLevel = LogLevel[config.logLevel as keyof typeof LogLevel] || LogLevel.Debug;
+const logLevel = log76.LogLevel[config.logLevel.toUpperCase() as keyof typeof log76.LogLevel] || log76.LogLevel.Standard;
 const logger = new log76(logLevel, { color: true });
 
+const originalConsoleError = console.error.bind(console)
+const originalConsoleLog = console.log.bind(console)
+const originalConsoleWarn = console.warn.bind(console)
+const originalConsoleInfo = console.info.bind(console)
+const originalConsoleTrace = console.trace.bind(console)
+
 // Update console overrides to use a consistent format, omitting the "CONSOLE" prefix.
-const originalConsoleError = console.error;
 console.error = (...args) => {
-  if (config.logToFile) logToFile(`ERROR: ${args.join(" ")}`);
-  originalConsoleError(...args);
+  logger.error(args.join(" "));
 };
-const originalConsoleLog = console.log;
 console.log = (...args) => {
-  if (config.logToFile) logToFile(`LOG: ${args.join(" ")}`);
-  originalConsoleLog(...args);
+  logger.info(args.join(" "));
 };
-const originalConsoleWarn = console.warn;
 console.warn = (...args) => {
-  if (config.logToFile) logToFile(`WARN: ${args.join(" ")}`);
-  originalConsoleWarn(...args);
+  logger.warn(args.join(" "));
+};
+console.info = (...args) => {
+  logger.info(args.join(" "));
+};
+console.trace = (...args) => {
+  logger.trace(args.join(" "));
 };
 
 const commands = loadCommands();
@@ -100,7 +133,7 @@ client.on('rateLimit', (info: RateLimitData) => {
   });
 });
 
-client.on('error', (error) => {
+client.on('error', (error: Error) => {
   logger.error(`Client error: ${error.message}`);
 });
 
@@ -109,13 +142,13 @@ const settings = new UserSettings(db);
 
 client.once('ready', async () => {
   if (client.shard) {
-    logger.info("Bot connected successfully to the designated server(s).");
+    logger.done("Bot connected successfully to the designated server(s).");
   }
 });
 
-client.login(config.tokens.discord).catch((err) => {
+client.login(config.tokens.discord).catch((err: Error) => {
   logger.error(`Could not authorise bot. ${err.toString()}`);
-  throw new Error(`Could not authorise bot. ${err.toString()}`);
+  process.exit(1);
 });
 
 // Load events using ShardingManager from index.ts
@@ -145,7 +178,7 @@ process.on("uncaughtException", (err) => {
     logger.error(
       `[FATAL ERROR] shard ${client.shard?.ids[0]} encountered a fatal error. (dump below)`
     );
-    console.error(err);
+    logger.error(err.toString());
     process.exit(1);
   }
 });
