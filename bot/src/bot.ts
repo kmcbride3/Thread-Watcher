@@ -121,12 +121,27 @@ export function initBot(deps: { manager: ShardingManager }): void {
 
 export { client, logger, commands, db, threads, config, settings };
 
+let shuttingDown = false;
+
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
+
+function shutdown() {
+  shuttingDown = true;
+  logger.info("Shutdown signal received, cleaning up...");
+  // Optionally perform cleanup here (e.g., closing DB connections)
+  process.exit(0);
+}
+
 process.on("uncaughtException", (err) => {
-  logger.error(
-    `[FATAL ERROR] shard ${client.shard?.ids[0]} encountered a fatal error. (dump below)`,
-  );
-  console.error(err);
-  throw new Error(
-    `[FATAL ERROR] shard ${client.shard?.ids[0]} encountered a fatal error. (dump below)`,
-  );
+  if (shuttingDown) {
+    // Suppress logging errors during shutdown
+    process.exit(0);
+  } else {
+    logger.error(
+      `[FATAL ERROR] shard ${client.shard?.ids[0]} encountered a fatal error. (dump below)`
+    );
+    console.error(err);
+    process.exit(1);
+  }
 });
