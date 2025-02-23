@@ -1,5 +1,4 @@
 import { logger } from "../bot";
-import { Collection, Shard } from 'discord.js';
 
 const invalidRequestLog: Record<string, number> = {
   "401": 0,
@@ -15,7 +14,10 @@ export const handleRateLimit = (retryAfter: number, isGlobal = false) => {
   return new Promise((resolve) => setTimeout(resolve, delay));
 };
 
-export const handleApiError = async (err: { code?: number; status?: number; headers?: Record<string, string>; retry_after?: number }, retryFunction: () => Promise<Collection<number, Shard>>) => {
+export const handleApiError = async <T>(
+  err: { code?: number; status?: number; headers?: Record<string, string>; retry_after?: number },
+  retryFunction: () => Promise<T>
+): Promise<T> => {
   const statusCode = err?.code ?? err?.status;
   if (statusCode === undefined) {
     throw new Error(`Error: Status code is undefined.`);
@@ -46,6 +48,8 @@ export const handleApiError = async (err: { code?: number; status?: number; head
   } else {
     throw new Error(`Unhandled error occurred. Status code: ${statusCode}. Original error: ${(err as Error)?.message ?? 'No error message available'}`);
   }
+  // Ensure function always returns a value or throws an error
+  return Promise.reject(new Error(`Unhandled error occurred. Status code: ${statusCode}.`));
 };
 
 export const logInvalidRequests = () => {

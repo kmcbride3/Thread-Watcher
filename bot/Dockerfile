@@ -5,9 +5,6 @@ FROM node:18-slim AS builder
 RUN apt-get update
 
 # Create the bot's directory
-# RUN mkdir -p /usr/src/bot
-
-# Create the bot's directory
 RUN mkdir -p /usr/src/bot/data
 
 # Set working directory
@@ -16,14 +13,17 @@ WORKDIR /usr/src/bot
 # Copy only the package/tsconfig files and the src dir
 COPY ["package.json", "yarn.lock*", "tsconfig.json", "_config.json5", "/usr/src/bot/"]
 
-# Install only the necessary packages for build
-RUN yarn install --frozen-lockfile --production && yarn cache clean --force
+# Install all dependencies (including devDependencies)
+RUN yarn install && yarn cache clean --force
 
 # Copy source code to build
 COPY ["./src/", "/usr/src/bot/src/"]
 
 # Run the build command which creates the production bundle
 RUN yarn run build
+
+# Remove devDependencies after build
+RUN yarn install --production --frozen-lockfile && yarn cache clean --force
 
 # Create production image without including the toolchain 
 FROM gcr.io/distroless/nodejs18-debian11:nonroot AS bot
