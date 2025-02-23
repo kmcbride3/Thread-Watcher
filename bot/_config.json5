@@ -79,4 +79,8 @@
    devServerInvite: 'https://discord.gg/server',
    // A webhook where shard notifications will be sent. Ensure this webhook starts with discord.com and NOT discordapp.com as that breaks the bot
    logWebhook: '',
+   // Set the log level (e.g., 'Debug', 'Info', 'Warn', 'Error')
+   logLevel: 'Info',
+   // Enable or disable logging to a file
+   logToFile: false,
 }

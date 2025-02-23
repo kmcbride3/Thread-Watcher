@@ -46,41 +46,43 @@ class log76 extends Log75 {
 
   async error(s: string) {
     this.print(s, "ERR", red, console.error);
-    await logToFile(`ERROR: ${s}`);
+    if (config.logToFile) await logToFile(`ERROR: ${s}`);
   }
 
   async done(s: string) {
     this.print(s, "OK", green, console.log);
-    await logToFile(`DONE: ${s}`);
+    if (config.logToFile) await logToFile(`DONE: ${s}`);
   }
 
   async warn(s: string) {
     this.print(s, "WARN", yellow, console.warn);
-    await logToFile(`WARN: ${s}`);
+    if (config.logToFile) await logToFile(`WARN: ${s}`);
   }
   
   async info(s: string) {
     this.print(s, "INFO", blue, console.log);
-    await logToFile(`INFO: ${s}`);
+    if (config.logToFile) await logToFile(`INFO: ${s}`);
   }
 }
 
-const logger = new log76(LogLevel.Debug, { color: true });
+// Set log level from config
+const logLevel = LogLevel[config.logLevel as keyof typeof LogLevel] || LogLevel.Debug;
+const logger = new log76(logLevel, { color: true });
 
 // Update console overrides to use a consistent format, omitting the "CONSOLE" prefix.
 const originalConsoleError = console.error;
 console.error = (...args) => {
-  logToFile(`ERROR: ${args.join(" ")}`);
+  if (config.logToFile) logToFile(`ERROR: ${args.join(" ")}`);
   originalConsoleError(...args);
 };
 const originalConsoleLog = console.log;
 console.log = (...args) => {
-  logToFile(`LOG: ${args.join(" ")}`);
+  if (config.logToFile) logToFile(`LOG: ${args.join(" ")}`);
   originalConsoleLog(...args);
 };
 const originalConsoleWarn = console.warn;
 console.warn = (...args) => {
-  logToFile(`WARN: ${args.join(" ")}`);
+  if (config.logToFile) logToFile(`WARN: ${args.join(" ")}`);
   originalConsoleWarn(...args);
 };
 

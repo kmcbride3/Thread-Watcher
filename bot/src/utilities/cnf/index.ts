@@ -7,7 +7,7 @@ const P_J5 = join(__dirname, "../../../config.json5")
 const P_FBJ5 = join(__dirname, "../../../_config.json5")
 const P_TS = join(__dirname, "../../config.js")
 
-type DbOptions = {
+interface DbOptions {
     user: string,
     password: string,
     host: string,
@@ -16,12 +16,12 @@ type DbOptions = {
     dataLocation: string
 }
 
-type BotStyle = {
+interface BotStyle {
     colour: string,
-    emoji: string
+    emoji: string,
 }
 
-export type ConfigFile = {
+interface ConfigFile {
     tokens: { discord: string, topgg: string },
     clientID: string,
     database: { type: "sqlite"|"mysql", options: DbOptions, backupInterval: string, backupAmount: number, backupProvider: "none"|"discord" },
@@ -30,19 +30,22 @@ export type ConfigFile = {
     owners: string[],
     devServer: string,
     devServerInvite: string,
-    logWebhook?: string
+    logWebhook?: string,
+    logLevel: string,
+    logToFile: boolean
 }
 
-const parse = () => {
-    const deprecatedFile = require(P_TS)
-    if(!deprecatedFile.default) {
+const parse = async () => {
+    const { default: deprecatedFile } = await import(P_TS)
+    if(!deprecatedFile) {
         console.log("Could not find old config")
         return
     }
-    let oldConf = (deprecatedFile.default as ConfigFile)
+    const oldConf = deprecatedFile as ConfigFile
 
-    oldConf.database.type = "sqlite"
-    console.warn("database type set to sqlite.\nif you used mysql previously set this variable manually")
+    if(!oldConf.database.type) {
+        console.warn("Database type has been set to 'sqlite' by default. If you previously used 'mysql', please update the 'database.type' field in the configuration file to 'mysql' and provide the necessary connection details.")
+    }
 
     // Default dataLocation to "./" as most users use sqlite
     // and that is where the old data file will have been placed
@@ -59,7 +62,7 @@ const ensureFile = () => {
     if(j5CnfExists) return
 
     if(!j5CnfExists && !j5FallBackExists && !tsCnfExists) {
-        console.error("No config exists.\nCopy the contents of https://github.com/ffamilyfriendly/Thread-Watcher/blob/main/bot/_config.json5 into a file called \"config.json5\" in the bot folder ")
+        console.error("No config exists.\nCopy the contents of https://github.com/ffamilyfriendly/Thread-Watcher/blob/main/bot/_config.json5 into a file called \"config.json5\" in the bot folder located at 'bot/config.json5'.")
         process.exit(1)
     }
 
@@ -76,10 +79,14 @@ const ensureFile = () => {
     }
 }
 
-const reviver = ( key: string, value: any ) => validateValue(key, value)
-
-export default function(): ConfigFile {
-    ensureFile()
-    const config = (j5Parse(readFileSync(P_J5, "utf-8"), reviver) as ConfigFile)
-    return config
+export default function (): ConfigFile {
+    ensureFile();
+    const reviver = (key: string, value: unknown) => validateValue(key, value)
+    try {
+        const config = j5Parse(readFileSync(P_J5, "utf-8"), reviver) as ConfigFile
+        return config
+    } catch (error) {
+        console.error("Error reading the config file:", error)
+        process.exit(1)
+    }
 }
