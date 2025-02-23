@@ -27,6 +27,7 @@ const makeVisible = () => {
           handleApiError(err, () => {
             queue.unshift(t);
             makeVisible();
+            return Promise.resolve();
           }).catch(() => {
             summary.fail_could_not_edit++;
           });
@@ -52,6 +53,7 @@ const makeVisible = () => {
             handleApiError(err, () => {
               queue.unshift(t);
               makeVisible();
+              return Promise.resolve();
             }).catch(() => {
               summary.fail_could_not_edit++;
             });
@@ -62,6 +64,7 @@ const makeVisible = () => {
             handleApiError(err, () => {
               queue.unshift(t);
               makeVisible();
+              return Promise.resolve();
             }).catch(() => {
               summary.fail_could_not_edit++;
             });
@@ -89,6 +92,7 @@ const makeVisible = () => {
             handleApiError(err, () => {
               queue.unshift(t);
               makeVisible();
+              return Promise.resolve();
             }).catch(() => {
               summary.fail_could_not_edit++;
             });
@@ -101,6 +105,7 @@ const makeVisible = () => {
             handleApiError(err, () => {
               queue.unshift(t);
               makeVisible();
+              return Promise.resolve();
             }).catch(() => {
               summary.fail_could_not_edit++;
             });

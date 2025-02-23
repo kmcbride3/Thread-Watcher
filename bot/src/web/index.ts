@@ -119,7 +119,10 @@ export default function start(
         });
       }
     }).catch((err) => {
-      handleApiError(err, statsFunc);
+      handleApiError(err, () => {
+        statsFunc();
+        return Promise.resolve();
+      });
     });
     timesRan += 1;
   };
@@ -157,6 +160,7 @@ export default function start(
       .catch((err) => {
         handleApiError(err, () => {
           res.status(500).send("something went wrong");
+          return Promise.resolve();
         });
       });
   });
