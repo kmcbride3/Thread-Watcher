@@ -2,6 +2,8 @@ import { Client, GatewayIntentBits, RateLimitData, Options, ShardingManager } fr
 import Log75 from "log75";
 import loadEvents from "./utilities/loadEvents";
 import loadCommands from "./utilities/loadCommands";
+// Remove redundant imports
+// import { registerCommands, checkCommandChange, genCommandHash } from "./utilities/registerCommands";
 
 import { DataBases, getDatabase } from "./utilities/database/DatabaseManager";
 import { ThreadData } from "./interfaces/database";
@@ -121,11 +123,6 @@ console.trace = (...args) => {
 
 const commands = loadCommands();
 
-client.on('shardDisconnect', (_event, shardId) => {
-  logger.warn(`Shard ${shardId} disconnected. Attempting to respawn...`);
-  client.shard?.respawnAll();
-});
-
 client.on('rateLimit', (info: RateLimitData) => {
   logger.warn(`Rate limit hit: ${JSON.stringify(info)}`);
   handleRateLimit(info.retryAfter, info.global).then(() => {
@@ -146,9 +143,9 @@ client.once('ready', async () => {
   }
 });
 
-client.login(config.tokens.discord).catch((err: Error) => {
+client.login(config.tokens.discord).catch(async (err: Error) => {
   logger.error(`Could not authorise bot. ${err.toString()}`);
-  process.exit(1);
+  await handleShutdown("login failure");
 });
 
 // Load events using ShardingManager from index.ts
@@ -156,21 +153,39 @@ export function initBot(deps: { manager: ShardingManager }): void {
   loadEvents(client, { manager: deps.manager });
 }
 
-export { client, logger, commands, db, threads, config, settings };
+export { client, logger, commands, db, threads, config, settings, handleShutdown };
 
 let shuttingDown = false;
 
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
-
-function shutdown() {
+const handleShutdown = async (reason: string) => {
+  if (shuttingDown) return;
   shuttingDown = true;
-  logger.info("Shutdown signal received, cleaning up...");
-  // Optionally perform cleanup here (e.g., closing DB connections)
-  process.exit(0);
-}
+  logger.debug(`Shutdown initiated due to: ${reason}`);
+  const shutdownTimeout = setTimeout(() => {
+    logger.error("Shutdown process taking too long, forcing exit...");
+    process.exit(1);
+  }, 10000); // 10 seconds timeout
 
-process.on("uncaughtException", (err) => {
+  try {
+    // Perform shard-level clean-up here
+    await client.destroy();
+    clearTimeout(shutdownTimeout);
+    logger.done("Shard shut down successfully.");
+    process.exit(0);
+  } catch (err) {
+    logger.error(`Error during shutdown: ${err}`);
+    clearTimeout(shutdownTimeout);
+    process.exit(1);
+  }
+};
+
+process.on("message", async (message) => {
+  if (message === 'shutdown') {
+    await handleShutdown("received shutdown message");
+  }
+});
+
+process.on("uncaughtException", async (err) => {
   if (shuttingDown) {
     // Suppress logging errors during shutdown
     process.exit(0);
@@ -179,6 +194,6 @@ process.on("uncaughtException", (err) => {
       `[FATAL ERROR] shard ${client.shard?.ids[0]} encountered a fatal error. (dump below)`
     );
     logger.error(err.toString());
-    process.exit(1);
+    await handleShutdown("uncaught exception");
   }
 });

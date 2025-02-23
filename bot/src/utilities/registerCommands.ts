@@ -42,7 +42,7 @@ export const registerCommands = async (global: boolean, config: ConfigFile) => {
   if (!global && config.devServer) {
     privateCommands.push(...publicCommands);
     publicCommands.splice(0, publicCommands.length);
-}
+  }
 
   const rest = new REST({ version: "10" }).setToken(config.tokens.discord);
 
@@ -117,7 +117,7 @@ export function checkCommandChange(): boolean {
   const oldHash = existsSync(oldHashPath)
     ? readFileSync(oldHashPath, "utf8")
     : Buffer.from("file does not exist").toString("base64");
-  const currentHash = genCommandHash();
+  const currentHash = genCommandHash(false);
 
-  return oldHash === currentHash;
+  return oldHash !== currentHash;
 }

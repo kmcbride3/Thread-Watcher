@@ -5,12 +5,13 @@ import {
   Colors,
   ColorResolvable,
 } from "discord.js";
-import { client, logger, config, initBot } from "./bot";
+import { client, logger, config, initBot, handleShutdown } from "./bot";
 import { AutoPoster } from "topgg-autoposter";
 import {
   checkCommandChange,
   clearCommands,
-  registerCommands
+  registerCommands,
+  genCommandHash
 } from "./utilities/registerCommands";
 import start from "./web";
 import { DataBases, getDatabase } from "./utilities/database/DatabaseManager";
@@ -47,52 +48,55 @@ const webLog = async (
 const args = process.argv.slice(2);
 
 const checkCommandRegistryParameters = async () => {
-  if (checkCommandChange()) {
-    logger.debug("No command changes found");
+  if (!checkCommandChange()) {
+    logger.info("No command changes detected, skipping registration.");
   } else {
     try {
       await registerCommands(!args.includes("-local"), config);
+      genCommandHash(true); // Update the hash file after registering commands
     } catch (err) {
-      logger.error(`failed to register commands.\n${err}`);
-      process.exit(1);
+      logger.error(`Failed to register commands.\n${err}`);
+      await handleShutdown("command registration failure");
     }
   }
 
   if (args.includes("-clear_commands")) {
     const local = args.includes("-local");
     await clearCommands(local, config)
-      .then(() => {
+      .then(async () => {
         logger.done(
-          `removed all ${local ? "local" : "global"} commands. Exiting...`,
+          `Removed all ${local ? "local" : "global"} commands. Exiting...`,
         );
-        process.exit(0);
+        await handleShutdown("clear commands");
       })
-      .catch((err) => {
+      .catch(async (err) => {
         logger.error(
-          `failed to remove all ${local ? "local" : "global"} commands.\n${err}`,
+          `Failed to remove all ${local ? "local" : "global"} commands.\n${err}`,
         );
-        process.exit(1);
+        await handleShutdown("clear commands failure");
       });
   }
 
   if (args.includes("-reg_commands")) {
     await registerCommands(!args.includes("-local"), config)
       .then(() => {
-        process.exit(0);
+        logger.done("Commands registered successfully.");
       })
-      .catch((err) => {
-        logger.error(`failed to register commands.\n${err}`);
-        process.exit(1);
+      .catch(async (err) => {
+        logger.error(`Failed to register commands.\n${err}`);
+        await handleShutdown("register commands failure");
       });
   }
 };
 
 // Global error handlers to log unexpected errors
-process.on("unhandledRejection", (reason) => {
+process.on("unhandledRejection", async (reason) => {
   logger.error(`Unhandled Rejection: ${reason}`);
+  await handleShutdown("unhandled rejection");
 });
-process.on("uncaughtException", (error) => {
+process.on("uncaughtException", async (error) => {
   logger.error(`Uncaught Exception: ${error}`);
+  await handleShutdown("uncaught exception");
 });
 
 const manager = new ShardingManager("./dist/bot.js", {
@@ -113,6 +117,31 @@ manager.on("shardCreate", (shard) => {
   shard.on("error", (error) => {
     logger.error(`Shard ${shard.id} encountered an error: ${error}`);
   });
+
+  shard.on("ready", () => {
+    logger.debug(`Shard ${shard.id} is ready.`);
+  });
+
+  shard.on("reconnecting", () => {
+    logger.debug(`Shard ${shard.id} is reconnecting.`);
+  });
+
+  shard.on("resume", () => {
+    logger.debug(`Shard ${shard.id} resumed.`);
+  });
+
+  shard.on("death", () => {
+    logger.debug(`Shard ${shard.id} died.`);
+  });
+
+  shard.on("message", (message) => {
+    logger.debug(`Shard ${shard.id} received message: ${message}`);
+  });
+
+  shard.on("disconnect", () => {
+    logger.debug(`Shard ${shard.id} disconnected. Attempting to respawn...`);
+    shard.respawn();
+  });
 });
 
 client.once('ready', async () => {
@@ -121,6 +150,7 @@ client.once('ready', async () => {
     await handleApiError(e, () => manager.spawn());
     logger.error("Failed to spawn Shard Manager. (dump below)");
     logger.error(e.toString());
+    await handleShutdown("shard manager spawn failure");
   });
 
   if (config.tokens.topgg) {
@@ -163,12 +193,47 @@ client.once('ready', async () => {
     });
   });
 
-  const killChildren = () => {
-    manager.shards.forEach((s) => s.kill());
+  const shutdownShards = async () => {
+    const results = await manager.broadcastEval(async (client) => {
+      try {
+        await client.destroy();
+        return true;
+      } catch (err) {
+        logger.error(`Error shutting down shard: ${err}`);
+        return false;
+      }
+    });
+    return results.every(result => result);
   };
 
-  process.on("SIGABRT", killChildren);
-  process.on("SIGINT", killChildren);
+  const handleShutdown = async (reason: string) => {
+    logger.info(`Shutdown initiated due to: ${reason}`);
+    const shutdownTimeout = setTimeout(() => {
+      logger.error("Shutdown process taking too long, forcing exit...");
+      process.exit(1);
+    }, 10000); // 10 seconds timeout
+
+    try {
+      const success = await shutdownShards();
+      clearTimeout(shutdownTimeout);
+      if (success) {
+        logger.done("All shards shut down successfully. Main process exiting.");
+        process.exit(0);
+      } else {
+        logger.error("Error during shutdown: Not all shards shut down successfully.");
+        process.exit(1);
+      }
+    } catch (err) {
+      logger.error(`Error during shutdown: ${err}`);
+      clearTimeout(shutdownTimeout);
+      process.exit(1);
+    }
+  };
+
+  // Handle SIGABRT, SIGINT, and SIGTERM signals
+  process.on("SIGABRT", async () => await handleShutdown("SIGABRT"));
+  process.on("SIGINT", async () => await handleShutdown("SIGINT"));
+  process.on("SIGTERM", async () => await handleShutdown("SIGTERM"));
 });
 
 const database = getDatabase(DataBases[config.database.type], config);
