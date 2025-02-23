@@ -189,12 +189,17 @@ function handleInteraction<TInteractionType extends FunkyFella>(
 }
 
 export default function (interaction: BaseInteraction) {
-  if (interaction.isChatInputCommand()) handleCommands(interaction);
-  if (interaction.isAutocomplete()) handleAutoComplete(interaction);
-  if (interaction.isButton())
+  if (typeof interaction.isChatInputCommand === "function" && interaction.isChatInputCommand()) {
+    handleCommands(interaction);
+  } else if (typeof interaction.isAutocomplete === "function" && interaction.isAutocomplete()) {
+    handleAutoComplete(interaction);
+  } else if (interaction.isButton()) {
     handleInteraction(interaction, ButtonInteractionQueue);
-  if (interaction.isModalSubmit())
+  } else if (interaction.isModalSubmit()) {
     handleInteraction(interaction, ModalInteractionQueue);
-  if (interaction.isAnySelectMenu())
+  } else if (interaction.isAnySelectMenu()) {
     return handleInteraction(interaction, StringSelectInteractionQueue);
+  } else {
+    logger.warn("Received an interaction that is not of a supported type.");
+  }
 }

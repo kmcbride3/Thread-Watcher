@@ -34,55 +34,53 @@ class log76 extends Log75 {
     super(level, options);
   }
 
-  // Override the print method entirely so that only the type is coloured
+  // Override print so that the shard id is only added if present and no "UNKNOWN" is shown.
   print(msg: string, type: string, color: (msg: string) => string, output: (msg: string) => void): string {
-    // Use a fallback in case type is undefined
-    const typeStr = type || "UNKNOWN";
-    // Only apply colour to the type text
-    const coloredType = color(typeStr);
-    const formattedMsg = `[${coloredType}] ${msg}`;
+    // Use shard id if available, else empty string.
+    const shardLabel = client.shard?.ids.length ? client.shard.ids.join(", ") : "";
+    const prefix = shardLabel ? `[Shard ${shardLabel}] ` : "";
+    const formattedMsg = `${prefix}${msg}`;
     output(formattedMsg);
     return formattedMsg;
   }
 
   async error(s: string) {
-    this.print(s, `${client.shard?.ids[0] ?? "UNKNOWN"} ERR`, red, console.error);
+    this.print(s, "ERR", red, console.error);
     await logToFile(`ERROR: ${s}`);
   }
 
   async done(s: string) {
-    this.print(s, `${client.shard?.ids[0] ?? "UNKNOWN"} OK`, green, console.log);
+    this.print(s, "OK", green, console.log);
     await logToFile(`DONE: ${s}`);
   }
 
   async warn(s: string) {
-    this.print(s, `${client.shard?.ids[0] ?? "UNKNOWN"} WARN`, yellow, console.warn);
+    this.print(s, "WARN", yellow, console.warn);
     await logToFile(`WARN: ${s}`);
   }
   
   async info(s: string) {
-    this.print(s, `${client.shard?.ids[0] ?? "UNKNOWN"} INFO`, blue, console.log);
+    this.print(s, "INFO", blue, console.log);
     await logToFile(`INFO: ${s}`);
   }
 }
 
 const logger = new log76(LogLevel.Debug, { color: true });
 
+// Update console overrides to use a consistent format, omitting the "CONSOLE" prefix.
 const originalConsoleError = console.error;
 console.error = (...args) => {
-  logToFile(`CONSOLE ERROR: ${args.join(' ')}`);
+  logToFile(`ERROR: ${args.join(" ")}`);
   originalConsoleError(...args);
 };
-
 const originalConsoleLog = console.log;
 console.log = (...args) => {
-  logToFile(`CONSOLE LOG: ${args.join(' ')}`);
+  logToFile(`LOG: ${args.join(" ")}`);
   originalConsoleLog(...args);
 };
-
 const originalConsoleWarn = console.warn;
 console.warn = (...args) => {
-  logToFile(`CONSOLE WARN: ${args.join(' ')}`);
+  logToFile(`WARN: ${args.join(" ")}`);
   originalConsoleWarn(...args);
 };
 

@@ -4,7 +4,14 @@ import { addThread, bumpAutoTime, dueArchiveTimestamp, removeThread, setArchive 
 import { db, threads } from "../bot";
 import { threadShouldBeWatched } from "./threadCreate";
 
-export default async function(oldThread: ThreadChannel, newThread: ThreadChannel) {
+export default function () {
+  return async function threadUpdateHandler(oldThread: ThreadChannel, newThread: ThreadChannel): Promise<void> {
+    // Safeguard: if guildId is missing, log accordingly.
+    if (!newThread || !newThread.guildId) {
+      logger.warn("[UNKNOWN INFO] threadUpdate event triggered without guildId.");
+      return;
+    }
+
     try {
         const auto = (await db.getChannels(newThread.guildId)).find(t => t.id == newThread.parentId) || (await db.getChannels(newThread.guildId)).find(t => t.id == newThread.parent?.parentId)
     if(auto) {
@@ -67,4 +74,5 @@ export default async function(oldThread: ThreadChannel, newThread: ThreadChannel
         logger.error("Failed threadUpdate event (dump below)")
         console.error(err)
     }
+  };
 }

@@ -1,12 +1,7 @@
 import { Client } from "discord.js";
 import { readdirSync } from "fs";
 
-/**
- *
- * @param client The client to register the events on.
- * @param refresh removes old listener if set to true
- */
-export default function loadEvents(
+export default async function loadEvents(
   client: Client,
   deps: { manager: import("discord.js").ShardingManager },
   refresh = false
@@ -16,9 +11,19 @@ export default function loadEvents(
       const eventName = file.split(".")[0];
       if (refresh) client.removeAllListeners(eventName);
       if (!client.listenerCount(eventName)) {
-        const eventFactory = (await import(`../events/${file}`)).default;
-        const handler = eventFactory(deps);
-        client.on(eventName, handler);
+        const eventModule = await import(`../events/${file}`);
+        if (typeof eventModule.default !== "function") {
+          // Log a warning if the default export is not a function
+          console.warn(`Event file ${file} does not export a valid function.`);
+          return;
+        }
+        const handler = eventModule.default(deps);
+        // Make sure the handler is still a function
+        if (typeof handler === "function") {
+          client.on(eventName, handler);
+        } else {
+          console.warn(`Event file ${file} returned an invalid listener.`);
+        }
       }
     }
   });
