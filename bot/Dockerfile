@@ -8,7 +8,8 @@ RUN apt-get update
 RUN mkdir -p /usr/src/bot/data && \
     touch /usr/src/bot/data/thread-watcher.log && \
     chmod 666 /usr/src/bot/data/thread-watcher.log && \
-    chown -R 1000:1000 /usr/src/bot/data
+    chown -R 1000:1000 /usr/src/bot && \
+    chmod -R 775 /usr/src/bot
 
 # Set working directory
 WORKDIR /usr/src/bot

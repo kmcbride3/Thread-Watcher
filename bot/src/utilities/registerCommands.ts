@@ -3,6 +3,8 @@ import {
   existsSync,
   readFileSync,
   writeFileSync,
+  mkdirSync,
+  chmodSync,
 } from "fs";
 import path from "path";
 import { REST, Routes } from "discord.js";
@@ -93,7 +95,17 @@ export function genCommandHash(writeToFile = true): string {
   const digest = hash.digest("base64");
 
   if (writeToFile) {
-    writeFileSync("./.commandshash", digest, { mode: 0o666 });
+    const hashFilePath = path.resolve(__dirname, '../../.commandshash');
+    const hashDir = path.dirname(hashFilePath);
+
+    // Ensure the directory exists and has the correct permissions
+    if (!existsSync(hashDir)) {
+      mkdirSync(hashDir, { recursive: true });
+      chmodSync(hashDir, 0o775); // Set directory permissions to 775
+    }
+
+    // Ensure the .commandshash file exists and has the correct permissions
+    writeFileSync(hashFilePath, digest, { mode: 0o666 });
   }
 
   return digest;

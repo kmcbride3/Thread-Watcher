@@ -12,6 +12,8 @@ services:
       - type: bind
         source: ./bot/config.json5
         target: /usr/src/bot/config.json5
+    environment:
+      - NODE_ENV=production
 
 networks:
   default:
