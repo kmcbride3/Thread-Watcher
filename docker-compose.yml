@@ -3,13 +3,12 @@ services:
   thread-watcher:
     container_name: thread-watcher
     build:
-        context: ./bot
-        dockerfile: Dockerfile
+      context: ./bot
+      dockerfile: Dockerfile
+    user: "1000:1000"
     restart: always
     volumes:
-      - type: bind
-        source: ./bot/data/data.db
-        target: /usr/src/bot/data/data.db
+      - ./bot/data:/usr/src/bot/data
       - type: bind
         source: ./bot/config.json5
         target: /usr/src/bot/config.json5

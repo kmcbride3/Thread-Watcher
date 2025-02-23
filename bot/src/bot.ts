@@ -29,6 +29,24 @@ const client = new Client({
 });
 
 class log76 extends Log75 {
+  constructor(level: LogLevel, options: { color: boolean }) {
+    super(level, options);
+    // Patch the print method to clamp negative count values, using a minimum of 1 for padding
+    const originalPrint = this.print;
+    this.print = (msg: string, type: string, color: (msg: string) => string, output: (msg: string) => void) => {
+      let count = 1;
+      if (typeof type === "number") {
+        count = Math.max(1, type);
+        type = count.toString();
+      } else if (typeof type === "string") {
+        const parsed = parseInt(type, 10);
+        count = isNaN(parsed) ? 1 : Math.max(1, parsed);
+        type = count.toString();
+      }
+      return originalPrint.call(this, msg, type, color, output);
+    };
+  }
+
   async error(s: string) {
     super.print(s, `${client.shard?.ids[0]} ERR`, red, console.error);
     await logToFile(`ERROR: ${s}`);

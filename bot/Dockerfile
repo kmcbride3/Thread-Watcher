@@ -1,14 +1,14 @@
 # Multi-stage build and app-only image
 
 # Create base image with toolchain required to install dependencies
-FROM node:18-slim AS builder
+FROM node:22-slim AS builder
 RUN apt-get update
 
-# Combine data directory creation, log file creation, and permission changes into a single layer
+# Combine data directory and log file creation with strict permissions
 RUN mkdir -p /usr/src/bot/data && \
     touch /usr/src/bot/data/thread-watcher.log && \
-    chmod -R 775 /usr/src/bot/data && \
-    chown -R 65532:65532 /usr/src/bot/data
+    chmod 666 /usr/src/bot/data/thread-watcher.log && \
+    chown -R 1000:1000 /usr/src/bot/data
 
 # Set working directory
 WORKDIR /usr/src/bot
@@ -29,7 +29,7 @@ RUN yarn run build
 RUN yarn install --production --frozen-lockfile && yarn cache clean --force
 
 # Create production image without including the toolchain 
-FROM gcr.io/distroless/nodejs18-debian11:nonroot AS bot
+FROM gcr.io/distroless/nodejs22-debian12 AS bot
 
 # Set NODE_ENV environment variable
 ENV NODE_ENV production
@@ -38,12 +38,12 @@ ENV NODE_ENV production
 WORKDIR /usr/src/bot
 
 # Copy built node modules and binaries without including the source code or toolchain
-COPY --chown=nonroot:nonroot --from=builder /usr/src/bot/node_modules /usr/src/bot/node_modules
-COPY --chown=nonroot:nonroot --from=builder /usr/src/bot/dist /usr/src/bot/dist
+COPY --chown=1000:1000 --from=builder /usr/src/bot/node_modules /usr/src/bot/node_modules
+COPY --chown=1000:1000 --from=builder /usr/src/bot/dist /usr/src/bot/dist
 
 # Copy config
-COPY --chown=nonroot:nonroot --from=builder /usr/src/bot/_config.json5 /usr/src/bot/_config.json5
-COPY --chown=nonroot:nonroot --from=builder /usr/src/bot/data /usr/src/bot/data
+COPY --chown=1000:1000 --from=builder /usr/src/bot/_config.json5 /usr/src/bot/_config.json5
+COPY --chown=1000:1000 --from=builder /usr/src/bot/data /usr/src/bot/data
 
 # Start the bot & register slash commands.
 CMD [ "./dist/index.js", "-reg_commands" ]
