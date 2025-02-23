@@ -9,42 +9,50 @@ export default function (client: Client) {
     logger.info(`Client ready on shard ${shardId}`);
   });
 
-  const loadThreads = (): Promise<ThreadData[] | void>[] => {
+  const loadThreads = (): Promise<(void | ThreadData[])[]> => {
     const promises: Promise<ThreadData[] | void>[] = [];
 
-    for (const [_id, guild] of client.guilds.cache) {
+    for (const [, guild] of client.guilds.cache) {
       const dbPromise: Promise<ThreadData[] | void> = db
         .getThreads(guild.id)
         .then((res) => {
           for (const t of res) threads.set(t.id, t);
         })
         .catch((err) => {
-          handleApiError(err, () => loadThreads());
+          handleApiError(err, loadThreads);
         });
 
       promises.push(dbPromise);
     }
 
-    return promises;
+    return Promise.all(promises);
   };
 
   const setPresence = () => {
-    client.user?.setPresence({
-      activities: [{ name: "your threads 🧵", type: ActivityType.Watching }],
-      status: "online",
-    });
+    if (client.user) {
+      client.user.setPresence({
+        activities: [{ name: "your threads 🧵", type: ActivityType.Watching }],
+        status: "online",
+      });
+    }
   };
 
   setPresence();
   setInterval(setPresence, 1000 * 60 * 60);
 
-  Promise.allSettled(loadThreads())
-    .then(() => {
+  loadThreads().then((promises) => Promise.allSettled(promises))
+    .then((results) => {
+      results.forEach((result) => {
+        if (result.status === "rejected") {
+          logger.warn("[Ready] could not load data for some guilds");
+          console.warn(result.reason);
+        }
+      });
       bumpThreadsRoutine();
       setInterval(bumpThreadsRoutine, 1000 * 60 * 50);
     })
     .catch((e) => {
-      logger.warn("[Ready] could not load data for some guilds");
+      logger.warn("[Ready] an unexpected error occurred");
       console.warn(e);
     });
 }
