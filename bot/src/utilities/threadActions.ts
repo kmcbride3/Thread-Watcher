@@ -24,9 +24,9 @@ export function dueArchiveTimestamp(
   return date.getTime() / 1000 + dueArchive * 60;
 }
 
-export function setArchive(thread: ThreadChannel, dueArchive = 10_080) {
+export function setArchive(thread: ThreadChannel, dueArchive = 10_080): Promise<void> {
   return new Promise((resolve, reject) => {
-    if (thread.locked) resolve(null);
+    if (thread.locked) return resolve();
 
     thread
       .setArchived(false)
@@ -48,10 +48,10 @@ export function setArchive(thread: ThreadChannel, dueArchive = 10_080) {
   });
 }
 
-export function bumpAutoTime(thread: ThreadChannel) {
+export function bumpAutoTime(thread: ThreadChannel): Promise<void> {
   return new Promise((resolve, reject) => {
     const t = threads.get(thread.id);
-    if (!t) return reject(`thread ${thread.id} not in thread list`);
+    if (!t) return reject(`Thread ${thread.id} not in thread list`);
     const newTimeStamp = dueArchiveTimestamp(
       thread.autoArchiveDuration || 0,
       thread.lastMessage?.createdAt,
@@ -62,7 +62,7 @@ export function bumpAutoTime(thread: ThreadChannel) {
   });
 }
 
-export function bumpUnknown(id: string) {
+export function bumpUnknown(id: string): void {
   db.updateDueArchive(id, dueArchiveTimestamp(10_080));
 }
 

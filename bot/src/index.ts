@@ -5,7 +5,7 @@ import {
   Colors,
   ColorResolvable,
 } from "discord.js";
-import { client, logger, config } from "./bot";
+import { client, logger, config, initBot } from "./bot";
 import { AutoPoster } from "topgg-autoposter";
 import {
   checkCommandChange,
@@ -104,6 +104,9 @@ const manager = new ShardingManager("./dist/bot.js", {
   execArgv: process.execArgv, // Pass exec arguments to the shards
   silent: false, // Enable logging for shard processes
 });
+
+// Pass the manager to bot.ts
+initBot({ manager });
 
 // Listen for shard errors
 manager.on("shardCreate", (shard) => {

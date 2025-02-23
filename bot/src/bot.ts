@@ -1,10 +1,11 @@
-import { Client, GatewayIntentBits, RateLimitData, Options } from "discord.js";
+import { Client, GatewayIntentBits, RateLimitData, Options, ShardingManager } from "discord.js";
 import Log75, { LogLevel } from "log75";
-import loadEvents from "./utilities/loadEvents"; // used to load events
+import loadEvents from "./utilities/loadEvents";
 import loadCommands from "./utilities/loadCommands";
+
 import { DataBases, getDatabase } from "./utilities/database/DatabaseManager";
 import { ThreadData } from "./interfaces/database";
-import { red, green, yellow, blue } from "ansi-colors"; // used in log76 class
+import { red, green, yellow, blue } from "ansi-colors";
 import cnf from "./utilities/cnf/index";
 import UserSettings from "./utilities/userSettings";
 import { handleRateLimit } from "./utilities/apiErrorHandler";
@@ -85,7 +86,6 @@ console.warn = (...args) => {
   originalConsoleWarn(...args);
 };
 
-loadEvents(client);
 const commands = loadCommands();
 
 client.on('shardDisconnect', (_event, shardId) => {
@@ -96,7 +96,7 @@ client.on('shardDisconnect', (_event, shardId) => {
 client.on('rateLimit', (info: RateLimitData) => {
   logger.warn(`Rate limit hit: ${JSON.stringify(info)}`);
   handleRateLimit(info.retryAfter, info.global).then(() => {
-    logger.info(`Resuming operations after rate limit delay of ${info.retryAfter}ms`);
+    logger.info(`Resuming operations after delay of ${info.retryAfter}ms`);
   });
 });
 
@@ -115,6 +115,11 @@ client.login(config.tokens.discord).catch((err) => {
   logger.error(`Could not authorise bot. ${err.toString()}`);
   throw new Error(`Could not authorise bot. ${err.toString()}`);
 });
+
+// Load events using ShardingManager from index.ts
+export function initBot(deps: { manager: ShardingManager }): void {
+  loadEvents(client, { manager: deps.manager });
+}
 
 export { client, logger, commands, db, threads, config, settings };
 

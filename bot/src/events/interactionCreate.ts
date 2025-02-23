@@ -5,6 +5,7 @@ import {
   EmbedBuilder,
   ChatInputCommandInteraction,
   AutocompleteInteraction,
+  MessageFlags,
 } from "discord.js";
 import { logger, config } from "../bot";
 import { commands } from "../bot";
@@ -52,7 +53,7 @@ const handleCommands = (interaction: ChatInputCommandInteraction) => {
         interaction.reply({
           embeds: [e],
           components: [...(misc?.components || [])],
-          ephemeral: ephemeral ? true : false,
+          flags: ephemeral ? MessageFlags.Ephemeral : undefined, // Use MessageFlags.Ephemeral instead of numeric value
         });
       }
     } catch (err) {

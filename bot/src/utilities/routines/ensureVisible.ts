@@ -4,6 +4,32 @@ import { ThreadData } from "../../interfaces/database";
 import { bumpAutoTime, bumpUnknown } from "../threadActions";
 import { handleApiError } from "../apiErrorHandler";
 
+// Helper function for user-friendly summary messaging
+function buildEnsureVisibleSummary(summary: {
+  worked: number;
+  fail_unknown_channel: number;
+  fail_could_not_edit: number;
+  failed_perms: number;
+}): string {
+  const lines: string[] = [];
+  if (summary.worked > 0) {
+    lines.push(`Threads bumped successfully: ${summary.worked}`);
+  }
+  if (summary.fail_unknown_channel > 0) {
+    lines.push(`Channels not found: ${summary.fail_unknown_channel}`);
+  }
+  if (summary.failed_perms > 0) {
+    lines.push(`Missing permissions: ${summary.failed_perms}`);
+  }
+  if (summary.fail_could_not_edit > 0) {
+    lines.push(`Threads failed to update: ${summary.fail_could_not_edit}`);
+  }
+  return lines.length === 0
+    ? "EnsureVisible routine completed with no issues."
+    : `EnsureVisible routine completed successfully.\nSummary:\n- ${lines.join("\n- ")}`;
+}
+
+// Queue and counter initialization
 const queue: ThreadData[] = [];
 const summary = {
   worked: 0,
@@ -18,11 +44,11 @@ const makeVisible = () => {
   const t = queue.shift();
   if (!t) return (running = false);
   client.channels
-    .fetch(t?.id)
+    .fetch(t.id)
     .then(async (thread) => {
       if (!thread?.isThread()) return;
 
-      if (thread.archived && thread.unarchivable)
+      if (thread.archived && thread.unarchivable) {
         await thread.setArchived(false).catch((err) => {
           handleApiError(err, () => {
             queue.unshift(t);
@@ -32,12 +58,10 @@ const makeVisible = () => {
             summary.fail_could_not_edit++;
           });
         });
+      }
 
       // If user only wants the bot to unarchive the thread without keeping it "active" we can just return here
-      if (
-        (await settings.getSetting(thread.guildId, "BEHAVIOUR")) ===
-        "UNARCHIVE_ONLY"
-      ) {
+      if ((await settings.getSetting(thread.guildId, "BEHAVIOUR")) === "UNARCHIVE_ONLY") {
         bumpAutoTime(thread);
         return;
       }
@@ -100,16 +124,16 @@ const makeVisible = () => {
           summary.worked++;
         } else {
           thread.send(
-            `**Bumping thread**\nDont mind me, i'm just making sure this thread is visible under your channel 👉😎👉\n\n*prefer silent bumps? Give me \`manage threads\` in <#${thread.parentId}>*`,
+            `**Bumping thread**\nDon't mind me, I'm just making sure this thread is visible under your channel 👉😎👉\n\n*prefer silent bumps? Give me \`manage threads\` in <#${thread.parentId}>*`,
           ).catch((err) => {
-            handleApiError(err, () => {
-              queue.unshift(t);
-              makeVisible();
-              return Promise.resolve();
-            }).catch(() => {
-              summary.fail_could_not_edit++;
+              handleApiError(err, () => {
+                queue.unshift(t);
+                makeVisible();
+                return Promise.resolve();
+              }).catch(() => {
+                summary.fail_could_not_edit++;
+              });
             });
-          });
           summary.worked++;
         }
       } else {
@@ -130,15 +154,17 @@ const makeVisible = () => {
   if (queue.length !== 0) setTimeout(makeVisible, 1000 / 4);
   else {
     running = false;
-    logger.done(
-      `ensureVisible routine completed.\nSummary:\n- worked: ${summary.worked} (${(summary.worked / (summary.worked + summary.failed_perms + summary.fail_unknown_channel + summary.fail_could_not_edit)) * 100}%)\n- cant get channel: ${summary.fail_unknown_channel}\n- no perms: ${summary.failed_perms}\n- could not edit: ${summary.fail_could_not_edit}`,
-    );
+    const finalMsg = buildEnsureVisibleSummary(summary);
+    logger.done(finalMsg);
   }
 };
 
 export default function bumpThreads(t: ThreadData[]) {
   queue.push(...t);
-  if (!running) makeVisible();
+  if (!running) {
+    running = true;
+    makeVisible();
+  }
 }
 
 /**
@@ -148,15 +174,19 @@ export default function bumpThreads(t: ThreadData[]) {
 export function getPossiblyArchivedThreads(threads: ThreadData[]) {
   const MaybeArchived: ThreadData[] = [];
   for (const thread of threads) {
-    const bigger = thread.dueArchive < Date.now() / 1000;
-    if (bigger && thread.watching) MaybeArchived.push(thread);
+    if (thread.dueArchive < Date.now() / 1000 && thread.watching) {
+      MaybeArchived.push(thread);
+    }
   }
   return MaybeArchived;
 }
 
-export function bumpThreadsRoutine() {
+export async function bumpThreadsRoutine(): Promise<void> {
   const needsBump = getPossiblyArchivedThreads([...threads.values()]);
-  if (needsBump.length === 0) return logger.info("no threads to bump");
+  if (needsBump.length === 0) {
+    await logger.info("No threads to bump");
+    return;
+  }
   logger.info(`Bumping ${needsBump.length} threads`);
   bumpThreads(needsBump);
 }
