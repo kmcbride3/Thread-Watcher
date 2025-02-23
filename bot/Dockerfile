@@ -25,8 +25,8 @@ RUN yarn run build
 # Remove devDependencies after build
 RUN yarn install --production --frozen-lockfile && yarn cache clean --force
 
-# Set permissions and ownership for /usr/src/bot/data in builder stage
-RUN chmod -R 775 /usr/src/bot/data && chown -R nonroot:nonroot /usr/src/bot/data
+# Set permissions and ownership for /usr/src/bot/data using numeric uid/gid (commonly 65532:65532 for nonroot)
+RUN chmod -R 775 /usr/src/bot/data && chown -R 65532:65532 /usr/src/bot/data
 
 # Create production image without including the toolchain 
 FROM gcr.io/distroless/nodejs18-debian11:nonroot AS bot
