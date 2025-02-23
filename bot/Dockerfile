@@ -8,6 +8,8 @@ RUN apt-get update
 RUN mkdir -p /usr/src/bot/data && \
     touch /usr/src/bot/data/thread-watcher.log && \
     chmod 666 /usr/src/bot/data/thread-watcher.log && \
+    touch /usr/src/bot/.commandshash && \
+    chmod 666 /usr/src/bot/.commandshash && \
     chown -R 1000:1000 /usr/src/bot && \
     chmod -R 775 /usr/src/bot
 
@@ -42,8 +44,9 @@ WORKDIR /usr/src/bot
 COPY --chown=1000:1000 --from=builder /usr/src/bot/node_modules /usr/src/bot/node_modules
 COPY --chown=1000:1000 --from=builder /usr/src/bot/dist /usr/src/bot/dist
 
-# Copy config
+# Copy config and commandshash files, set permissions on bot directory
 COPY --chown=1000:1000 --from=builder /usr/src/bot/_config.json5 /usr/src/bot/_config.json5
+COPY --chown=1000:1000 --from=builder /usr/src/bot/.commandshash /usr/src/bot/.commandshash
 COPY --chown=1000:1000 --from=builder /usr/src/bot/data /usr/src/bot/data
 
 # Start the bot & register slash commands.
