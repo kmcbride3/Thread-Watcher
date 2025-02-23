@@ -31,19 +31,23 @@ const client = new Client({
 class log76 extends Log75 {
   constructor(level: LogLevel, options: { color: boolean }) {
     super(level, options);
-    // Patch the print method to clamp negative count values, using a minimum of 1 for padding
+    // Patch the print method to ensure count is never below 1
     const originalPrint = this.print;
     this.print = (msg: string, type: string, color: (msg: string) => string, output: (msg: string) => void) => {
-      let count = 1;
+      let count: number;
       if (typeof type === "number") {
-        count = Math.max(1, type);
-        type = count.toString();
+        count = type;
       } else if (typeof type === "string") {
-        const parsed = parseInt(type, 10);
-        count = isNaN(parsed) ? 1 : Math.max(1, parsed);
-        type = count.toString();
+        count = parseInt(type, 10);
+      } else {
+        count = 1;
       }
-      return originalPrint.call(this, msg, type, color, output);
+      // Force a minimum count of 1
+      if (isNaN(count) || count < 1) {
+        count = 1;
+      }
+      // Call originalPrint with the clamped count (as a string)
+      return originalPrint.call(this, msg, count.toString(), color, output);
     };
   }
 
