@@ -1,10 +1,10 @@
 import { Client, GatewayIntentBits, RateLimitData, Options } from "discord.js";
 import Log75, { LogLevel } from "log75";
-import loadEvents from "./utilities/loadEvents";
+import loadEvents from "./utilities/loadEvents"; // used to load events
 import loadCommands from "./utilities/loadCommands";
 import { DataBases, getDatabase } from "./utilities/database/DatabaseManager";
 import { ThreadData } from "./interfaces/database";
-import { red, green, yellow } from "ansi-colors";
+import { red, green, yellow } from "ansi-colors"; // used in log76 class
 import cnf from "./utilities/cnf/index";
 import UserSettings from "./utilities/userSettings";
 import { handleRateLimit } from "./utilities/apiErrorHandler";
@@ -31,38 +31,28 @@ const client = new Client({
 class log76 extends Log75 {
   constructor(level: LogLevel, options: { color: boolean }) {
     super(level, options);
-    // Patch the print method to ensure count is never below 1
-    const originalPrint = this.print;
-    this.print = (msg: string, type: string, color: (msg: string) => string, output: (msg: string) => void) => {
-      let count: number;
-      if (typeof type === "number") {
-        count = type;
-      } else if (typeof type === "string") {
-        count = parseInt(type, 10);
-      } else {
-        count = 1;
-      }
-      // Force a minimum count of 1
-      if (isNaN(count) || count < 1) {
-        count = 1;
-      }
-      // Call originalPrint with the clamped count (as a string)
-      return originalPrint.call(this, msg, count.toString(), color, output);
-    };
+  }
+
+  // Override the print method entirely
+  print(msg: string, type: string, color: (msg: string) => string, output: (msg: string) => void): string {
+    // Simply prefix the message with the type indicator
+    const formattedMsg = `[${type}] ${msg}`;
+    output(color(formattedMsg));
+    return formattedMsg;
   }
 
   async error(s: string) {
-    super.print(s, `${client.shard?.ids[0]} ERR`, red, console.error);
+    this.print(s, `${client.shard?.ids[0]} ERR`, red, console.error);
     await logToFile(`ERROR: ${s}`);
   }
 
   async done(s: string) {
-    super.print(s, `${client.shard?.ids[0]} OK`, green, console.log);
+    this.print(s, `${client.shard?.ids[0]} OK`, green, console.log);
     await logToFile(`DONE: ${s}`);
   }
 
   async warn(s: string) {
-    super.print(s, `${client.shard?.ids[0]} WARN`, yellow, console.warn);
+    this.print(s, `${client.shard?.ids[0]} WARN`, yellow, console.warn);
     await logToFile(`WARN: ${s}`);
   }
 }
