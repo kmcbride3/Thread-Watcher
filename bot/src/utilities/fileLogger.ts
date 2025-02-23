@@ -13,6 +13,12 @@ export const ensureLogDirectoryExists = () => {
 
 export const ensureLogFileExists = () => {
   ensureLogDirectoryExists();
+  if (fs.existsSync(logFilePath)) {
+    // If the path exists but is a directory, remove it first.
+    if (fs.statSync(logFilePath).isDirectory()) {
+      fs.rmdirSync(logFilePath, { recursive: true });
+    }
+  }
   if (!fs.existsSync(logFilePath)) {
     fs.writeFileSync(logFilePath, '', { mode: 0o666 });
   }
