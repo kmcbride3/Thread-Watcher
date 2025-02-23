@@ -13,15 +13,17 @@ export const ensureLogDirectoryExists = () => {
 
 export const ensureLogFileExists = () => {
   ensureLogDirectoryExists();
-  if (fs.existsSync(logFilePath)) {
-    // If the path exists but is a directory, remove it first.
-    if (fs.statSync(logFilePath).isDirectory()) {
+  try {
+    const stats = fs.statSync(logFilePath);
+    if (stats.isDirectory()) {
       fs.rmdirSync(logFilePath, { recursive: true });
+    } else if (stats.isFile()) {
+      fs.unlinkSync(logFilePath);
     }
+  } catch (e: unknown) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
   }
-  if (!fs.existsSync(logFilePath)) {
-    fs.writeFileSync(logFilePath, '', { mode: 0o666 });
-  }
+  fs.writeFileSync(logFilePath, '', { mode: 0o666 });
 };
 
 export const logToFile = (message: string) => {
