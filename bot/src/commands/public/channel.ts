@@ -29,7 +29,7 @@ const info: Command = {
         id: channel.id,
         regex: "",
         roles: [],
-        tags: []
+        tags: [],
       });
       buildBaseEmbed("Added channel", statusType.success);
     } else {

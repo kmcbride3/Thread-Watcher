@@ -96,7 +96,7 @@ const handleThreadActioning = async (
           server: thread.guildId,
           regex: filters.regex ?? "",
           roles: filters.roles.map((r) => r?.id).filter((id): id is string => id !== undefined),
-          tags: filters.tags.map((t) => t?.id).filter((id): id is string => id !== undefined)
+          tags: filters.tags.map((t) => t?.id).filter((id): id is string => id !== undefined),
         },
         thread
       )
@@ -559,7 +559,7 @@ const batch: Command = {
               server: interaction.guildId ?? "",
               regex: filters.regex,
               tags: filters.tags.map((t) => t?.id).filter((id): id is string => id !== undefined),
-              roles: filters.roles.map((r) => r?.id).filter((id): id is string => id !== undefined)
+              roles: filters.roles.map((r) => r?.id).filter((id): id is string => id !== undefined),
             });
           }
 
@@ -596,7 +596,7 @@ const batch: Command = {
           server: interaction.guildId,
           regex: filters.regex,
           tags: filters.tags.map((t) => t?.id).filter((id): id is string => id !== undefined),
-          roles: filters.roles.map((r) => r?.id).filter((id): id is string => id !== undefined)
+          roles: filters.roles.map((r) => r?.id).filter((id): id is string => id !== undefined),
         });
       }
       sendResultsEmbed(result);

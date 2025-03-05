@@ -436,9 +436,52 @@ export const initialize = async (): Promise<void> => {
     });
   });
 
+  // Handle shard disconnects using broadcastEval to listen to shard events
+  manager.on("shardCreate", (shard) => {
+    // Set up additional event listeners for the shard
+    shard.on("disconnect", (CloseEvent?: { code?: number }) => {
+      // Handle different disconnect codes properly
+      let reason = "Unknown";
+
+      // Get the code if available, otherwise default to 0
+      const code: number = (CloseEvent?.code as number) || 0;
+      switch (code) {
+        case 1000:
+          reason = "Normal closure";
+          break;
+        case 1001:
+          reason = "Going away";
+          break;
+        case 1006:
+          reason = "Abnormal closure";
+          break;
+        case 4004:
+          reason = "Authentication failed";
+          break;
+        case 4010:
+          reason = "Invalid shard";
+          break;
+        case 4011:
+          reason = "Sharding required";
+          break;
+        case 4013:
+          reason = "Invalid intents";
+          break;
+        case 4014:
+          reason = "Disallowed intents";
+          break;
+        default:
+          reason = `Code: ${code}`;
+      }
+
+      logger.warn(`Shard ${shard.id} disconnected: ${reason}`);
+    });
+  });
+
   logger.debug(
     `[${processState.role.toUpperCase()}] About to spawn shards with delay 7000ms and timeout 60000ms.`
   );
+
   try {
     await manager.spawn({
       delay: 7000, // Increased delay between shard spawns
@@ -547,6 +590,3 @@ client.rest.on("request", (request) => {
   }
   return request.make();
 });
-
-export const database = () => db;
-export const getDatabase = () => db;
