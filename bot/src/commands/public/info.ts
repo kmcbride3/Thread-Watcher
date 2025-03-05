@@ -12,23 +12,23 @@ const info: Command = {
   run: async (interaction: ChatInputCommandInteraction, buildBaseEmbed) => {
     const embeds: EmbedBuilder[] = [];
 
-    await interaction.deferReply({ flags: [MessageFlagsBitField.Flags.Ephemeral] });
+    await interaction.deferReply({
+      flags: [MessageFlagsBitField.Flags.Ephemeral],
+    });
 
     const botInfo = async () => {
       const getGuildCount = () => {
         return new Promise((resolve) => {
-          interaction.client.shard
-            ?.fetchClientValues("guilds.cache.size")
-            .then((results) => {
-              if (!(results instanceof Array)) return;
+          interaction.client.shard?.fetchClientValues("guilds.cache.size").then((results) => {
+            if (!(results instanceof Array)) return;
 
-              let guildCount = 0;
-              for (const item of results) {
-                if (typeof item === "number") guildCount += item;
-              }
+            let guildCount = 0;
+            for (const item of results) {
+              if (typeof item === "number") guildCount += item;
+            }
 
-              resolve(guildCount);
-            });
+            resolve(guildCount);
+          });
         });
       };
 
@@ -40,28 +40,24 @@ const info: Command = {
 
       const processStarted = Math.floor(Date.now() / 1000 - process.uptime());
 
-      const e = buildBaseEmbed(
-        `About ${interaction.client.user.tag}`,
-        statusType.info,
-        {
-          fields: [
-            {
-              name: "Stats",
-              value: `🤙  Bot is in \`${guildCount}\` servers\n👁 Bot is watching \`${threads.size}\` threads in this shard\n🤓 Average threads watched per server in this shard is \`${(threads.size / interaction.client.guilds.cache.size).toFixed(2)}\` threads`,
-            },
-            {
-              name: "Shard",
-              value: `🥛  You are in shard \`${interaction.guild?.shardId}\`\n👲  There are \`${interaction.client.guilds.cache.size}\` guilds in this shard\n⏱ This shard started <t:${processStarted}:R>`,
-            },
-            {
-              name: "🚑 Get support",
-              value: `To get help with this instance of thread-watcher you can join the [**support server**](${config.devServerInvite})`,
-            },
-          ],
-          ephermal: true,
-          noSend: true,
-        },
-      );
+      const e = buildBaseEmbed(`About ${interaction.client.user.tag}`, statusType.info, {
+        fields: [
+          {
+            name: "Stats",
+            value: `🤙  Bot is in \`${guildCount}\` servers\n👁 Bot is watching \`${threads.size}\` threads in this shard\n🤓 Average threads watched per server in this shard is \`${(threads.size / interaction.client.guilds.cache.size).toFixed(2)}\` threads`,
+          },
+          {
+            name: "Shard",
+            value: `🥛  You are in shard \`${interaction.guild?.shardId}\`\n👲  There are \`${interaction.client.guilds.cache.size}\` guilds in this shard\n⏱ This shard started <t:${processStarted}:R>`,
+          },
+          {
+            name: "🚑 Get support",
+            value: `To get help with this instance of thread-watcher you can join the [**support server**](${config.devServerInvite})`,
+          },
+        ],
+        ephermal: true,
+        noSend: true,
+      });
       embeds.push(e);
     };
 
@@ -96,9 +92,7 @@ const info: Command = {
 
     interaction.editReply({ embeds: embeds });
   },
-  data: new SlashCommandBuilder()
-    .setName("info")
-    .setDescription("get information about the bot"),
+  data: new SlashCommandBuilder().setName("info").setDescription("get information about the bot"),
 };
 
 export default info;

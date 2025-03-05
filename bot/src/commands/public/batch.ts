@@ -20,18 +20,14 @@ import {
   StringSelectMenuOptionBuilder,
   AnySelectMenuInteraction,
   ButtonBuilder,
-  MessageFlagsBitField
+  MessageFlagsBitField,
 } from "discord.js";
 import { Command, statusType } from "../../interfaces/command";
 import { database as db } from "../../index";
 import { threads as threadsList } from "../../bot";
 import { threadShouldBeWatched } from "../../events/threadCreate";
 import { strToRegex, validRegex } from "../../utilities/regex";
-import {
-  addThread,
-  dueArchiveTimestamp,
-  removeThread,
-} from "../../utilities/threadActions";
+import { addThread, dueArchiveTimestamp, removeThread } from "../../utilities/threadActions";
 import TwButton from "../../components/Button";
 import TwModal from "../../components/Modal";
 import Chunkable from "../../utilities/Chunkable";
@@ -53,9 +49,7 @@ interface filterTypes {
   regex: string;
 }
 
-const getThreads = async function (
-  channel: threadContainers,
-): Promise<ThreadChannel[]> {
+const getThreads = async function (channel: threadContainers): Promise<ThreadChannel[]> {
   const threads: ThreadChannel[] = [];
   const promises: Promise<FetchedThreads | FetchedThreadsMore>[] = [];
 
@@ -67,9 +61,7 @@ const getThreads = async function (
   // Fetch all the archived threads for the channel. This requires the bot has "ReadMessageHistory"
   if (
     channel.guild.members.me &&
-    channel
-      .permissionsFor(channel.guild.members.me)
-      .has(PermissionFlagsBits.ReadMessageHistory)
+    channel.permissionsFor(channel.guild.members.me).has(PermissionFlagsBits.ReadMessageHistory)
   )
     promises.push(channel.threads.fetchArchived());
 
@@ -80,9 +72,7 @@ const getThreads = async function (
   // for some reason this needs to be done as ALL threads in the server are returned???
   // I've no clue why as docs specify that channel.threads.fetch<Active|Archived>() only returns threads of that channel
   for (const resolved of resolvedThreads)
-    threads.push(
-      ...resolved.threads.filter((t) => t.parentId == channel.id).values(),
-    );
+    threads.push(...resolved.threads.filter((t) => t.parentId == channel.id).values());
 
   return threads;
 };
@@ -90,7 +80,7 @@ const getThreads = async function (
 const handleThreadActioning = async (
   threads: ThreadChannel[],
   action: actionType,
-  filters: filterTypes,
+  filters: filterTypes
 ): Promise<actionsList> => {
   const rv: actionsList = {
     added: [],
@@ -109,7 +99,7 @@ const handleThreadActioning = async (
           tags: filters.tags.map((t) => t?.id).filter((id): id is string => id !== undefined),
           type: 0,
         },
-        thread,
+        thread
       )
     ) {
       switch (action) {
@@ -120,11 +110,8 @@ const handleThreadActioning = async (
           if (!threadsList.get(thread.id)?.watching) {
             addThread(
               thread.id,
-              dueArchiveTimestamp(
-                thread.autoArchiveDuration ?? 0,
-                thread.lastMessage?.createdAt,
-              ),
-              thread.guildId,
+              dueArchiveTimestamp(thread.autoArchiveDuration ?? 0, thread.lastMessage?.createdAt),
+              thread.guildId
             );
             rv.added.push(thread);
           } else {
@@ -146,11 +133,8 @@ const handleThreadActioning = async (
           } else {
             addThread(
               thread.id,
-              dueArchiveTimestamp(
-                thread.autoArchiveDuration ?? 0,
-                thread.lastMessage?.createdAt,
-              ),
-              thread.guildId,
+              dueArchiveTimestamp(thread.autoArchiveDuration ?? 0, thread.lastMessage?.createdAt),
+              thread.guildId
             );
             rv.noAction.push(thread);
           }
@@ -162,9 +146,7 @@ const handleThreadActioning = async (
   return rv;
 };
 
-const getDirThreads = async (
-  dir: CategoryChannel,
-): Promise<ThreadChannel[]> => {
+const getDirThreads = async (dir: CategoryChannel): Promise<ThreadChannel[]> => {
   const threads: ThreadChannel[] = [];
 
   for (const [, channel] of dir.children.cache) {
@@ -188,9 +170,10 @@ const getDirThreads = async (
 
 const batch: Command = {
   run: async (interaction: ChatInputCommandInteraction, buildBaseEmbed) => {
-    await interaction.deferReply({ flags: [MessageFlagsBitField.Flags.Ephemeral] });
-    const parent =
-      interaction.options.getChannel("parent") || interaction.channel;
+    await interaction.deferReply({
+      flags: [MessageFlagsBitField.Flags.Ephemeral],
+    });
+    const parent = interaction.options.getChannel("parent") || interaction.channel;
     const advanced = interaction.options.getBoolean("advanced");
     const watchNew = interaction.options.getBoolean("watch-new");
     let action: actionType = "inaction";
@@ -213,8 +196,7 @@ const batch: Command = {
     const buildActionList = (actions: actionsList) => {
       let rv = "";
 
-      if (actions.added.length !== 0)
-        rv += `**Threads watched:** \`${actions.added.length}\`\n`;
+      if (actions.added.length !== 0) rv += `**Threads watched:** \`${actions.added.length}\`\n`;
       if (actions.removed.length !== 0)
         rv += `**Threads unwatched:** \`${actions.removed.length}\`\n`;
       if (actions.noAction.length !== 0)
@@ -243,8 +225,7 @@ const batch: Command = {
       interaction.editReply({ embeds, components: [] });
     };
 
-    const buttonFilter = (int: ButtonInteraction) =>
-      int.user.id === interaction.user.id;
+    const buttonFilter = (int: ButtonInteraction) => int.user.id === interaction.user.id;
 
     if (
       !(
@@ -257,7 +238,10 @@ const batch: Command = {
       const embed = buildBaseEmbed("Wrong Channel Type", statusType.error, {
         description: `<#${parent?.id}> is not a valid channel for this command`,
       });
-      interaction.reply({ embeds: [embed], flags: [MessageFlagsBitField.Flags.Ephemeral] });
+      interaction.reply({
+        embeds: [embed],
+        flags: [MessageFlagsBitField.Flags.Ephemeral],
+      });
       return;
     }
 
@@ -265,7 +249,10 @@ const batch: Command = {
       const embed = buildBaseEmbed("Cannot view channel", statusType.error, {
         description: `Thread-Watcher cannot see <#${parent.id}>. Make sure the bot has the \`View Channel\` permission in the channel.`,
       });
-      interaction.reply({ embeds: [embed], flags: [MessageFlagsBitField.Flags.Ephemeral] });
+      interaction.reply({
+        embeds: [embed],
+        flags: [MessageFlagsBitField.Flags.Ephemeral],
+      });
       return;
     }
 
@@ -281,14 +268,11 @@ const batch: Command = {
     const threads: ThreadChannel[] = [];
 
     // put all the affected threads into a flat array
-    if (parent instanceof CategoryChannel)
-      threads.push(...(await getDirThreads(parent)));
+    if (parent instanceof CategoryChannel) threads.push(...(await getDirThreads(parent)));
     else threads.push(...(await getThreads(parent)));
 
     // put all the roles into a chunkable (such a good class wow must have been a genious who made that)
-    const roles = Chunkable.from(
-      Array.from(interaction.guild?.roles.cache.values() ?? []),
-    );
+    const roles = Chunkable.from(Array.from(interaction.guild?.roles.cache.values() ?? []));
 
     const filters: filterTypes = {
       roles: [],
@@ -316,11 +300,7 @@ const batch: Command = {
       const confirmationButtonComponents = new ActionRowBuilder<ButtonBuilder>();
 
       embeds.push(filterEmbed);
-      components.push(
-        regexRowComponents,
-        rolesSelectComponents,
-        rolesRowNavigationComponents,
-      );
+      components.push(regexRowComponents, rolesSelectComponents, rolesRowNavigationComponents);
 
       if (parent instanceof ForumChannel && parent.availableTags.length !== 0) {
         components.push(tagsSelectComponents);
@@ -332,16 +312,12 @@ const batch: Command = {
         filterEmbed.setFields([
           {
             name: "Roles",
-            value:
-              filters.roles.map((r) => `<@&${r?.id}>`).join(", ") ||
-              "none selected",
+            value: filters.roles.map((r) => `<@&${r?.id}>`).join(", ") || "none selected",
             inline: true,
           },
           {
             name: "Tags",
-            value:
-              filters.tags.map((t) => `${t?.name}`).join(", ") ||
-              "none selected",
+            value: filters.tags.map((t) => `${t?.name}`).join(", ") || "none selected",
             inline: true,
           },
           {
@@ -380,7 +356,7 @@ const batch: Command = {
         select.filter = (i) => i.user.id === interaction.user.id;
         select.onSubmit((i) => {
           filters.tags = i.values.map((tagId) =>
-            parent.availableTags.find((tag) => tag.id === tagId),
+            parent.availableTags.find((tag) => tag.id === tagId)
           );
           updateEmbed(i);
         });
@@ -407,7 +383,7 @@ const batch: Command = {
               .setDescription(
                 Math.random() > 0.995
                   ? "wow an easter egg???"
-                  : `${i.members.size} members has this role`,
+                  : `${i.members.size} members has this role`
               )
               .setValue(i.id);
 
@@ -452,9 +428,7 @@ const batch: Command = {
         });
 
         select.onSubmit((i) => {
-          filters.roles.push(
-            ...i.values.map((rId) => i.guild?.roles.cache.get(rId)),
-          );
+          filters.roles.push(...i.values.map((rId) => i.guild?.roles.cache.get(rId)));
           clearButton.button.setDisabled(false);
           updateEmbed(i);
         });
@@ -462,7 +436,7 @@ const batch: Command = {
         rolesRowNavigationComponents.addComponents(
           prevButton.button,
           clearButton.button,
-          nextButton.button,
+          nextButton.button
         );
         rolesSelectComponents.addComponents(select.select);
       };
@@ -538,14 +512,13 @@ const batch: Command = {
             value: ` ${testThreads.map((e) => `**${e.name}**: ${regex.regex.test(e.name) != regex.inverted}`).join("\n")} `,
           });
 
-          interaction.reply({ embeds: [e], flags: [MessageFlagsBitField.Flags.Ephemeral] });
+          interaction.reply({
+            embeds: [e],
+            flags: [MessageFlagsBitField.Flags.Ephemeral],
+          });
         });
 
-        regexRowComponents.addComponents(
-          setButton.button,
-          clearButton.button,
-          tryButton.button,
-        );
+        regexRowComponents.addComponents(setButton.button, clearButton.button, tryButton.button);
       };
 
       const confirmButtons = () => {
@@ -576,9 +549,7 @@ const batch: Command = {
 
           const result = await handleThreadActioning(threads, action, filters);
           if (watchNew) {
-            const alreadyExists = (await db.getChannels(parent.id)).find(
-              (t) => t.id == parent.id,
-            );
+            const alreadyExists = (await db.getChannels(parent.id)).find((t) => t.id == parent.id);
 
             // If filter alr exists for this channel we go ahead and delete it
             // this so the insertion we make later does not cause any oopsie poopsies
@@ -598,10 +569,7 @@ const batch: Command = {
           //i.reply("ok :D")
         });
 
-        confirmationButtonComponents.addComponents(
-          confirm.button,
-          cancel.button,
-        );
+        confirmationButtonComponents.addComponents(confirm.button, cancel.button);
       };
 
       regexButtons();
@@ -620,9 +588,7 @@ const batch: Command = {
     } else {
       const result = await handleThreadActioning(threads, action, filters);
       if (watchNew) {
-        const alreadyExists = (await db.getChannels(parent.id)).find(
-          (t) => t.id == parent.id,
-        );
+        const alreadyExists = (await db.getChannels(parent.id)).find((t) => t.id == parent.id);
 
         // If filter alr exists for this channel we go ahead and delete it
         // this so the insertion we make later does not cause any oopsie poopsies
@@ -652,17 +618,13 @@ const batch: Command = {
             { name: "unwatch", value: "unwatch" },
             { name: "toggle", value: "toggle" },
             { name: "nothing", value: "nothing" },
-          ],
+          ]
         )
-        .setRequired(true),
+        .setRequired(true)
     )
+    .addBooleanOption((o) => o.setName("advanced").setDescription("if you want more options"))
     .addBooleanOption((o) =>
-      o.setName("advanced").setDescription("if you want more options"),
-    )
-    .addBooleanOption((o) =>
-      o
-        .setName("watch-new")
-        .setDescription("will automatically watch new threads"),
+      o.setName("watch-new").setDescription("will automatically watch new threads")
     ),
   gatekeeping: {
     userPermissions: [PermissionFlagsBits.ManageThreads],

@@ -30,8 +30,8 @@ export interface baseEmbedOptions {
 
 // Define the type for the buildBaseEmbed function
 export type BuildBaseEmbedFunction = (
-  title: string, 
-  status?: statusType, 
+  title: string,
+  status?: statusType,
   options?: baseEmbedOptions
 ) => EmbedBuilder;
 
@@ -40,7 +40,7 @@ export interface Gatekeeping {
   userPermissions?: PermissionResolvable[];
   botPermissions?: PermissionResolvable[];
   devServerOnly: boolean;
-};
+}
 
 export interface Command {
   data:
@@ -52,21 +52,13 @@ export interface Command {
   externalOptions?: any[];
   run: (
     interaction: ChatInputCommandInteraction,
-    buildBaseEmbed: (
-      title: string,
-      status: statusType,
-      misc?: baseEmbedOptions,
-    ) => EmbedBuilder,
+    buildBaseEmbed: (title: string, status: statusType, misc?: baseEmbedOptions) => EmbedBuilder
   ) => Promise<void>;
-    
+
   execute?: (
     interaction: ChatInputCommandInteraction,
-    buildBaseEmbed: (
-      title: string,
-      status: statusType,
-      misc?: baseEmbedOptions,
-    ) => EmbedBuilder,
+    buildBaseEmbed: (title: string, status: statusType, misc?: baseEmbedOptions) => EmbedBuilder
   ) => Promise<void>;
-  
+
   autocomplete?: (interaction: AutocompleteInteraction) => Promise<void>;
 }

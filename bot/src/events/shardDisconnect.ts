@@ -5,6 +5,8 @@ export default {
   name: Events.ShardDisconnect,
   once: false,
   execute(closeEvent: CloseEvent, shardId: number) {
-    logger.warn(`Shard ${shardId} disconnected: code ${closeEvent.code}, reason: ${closeEvent.reason || "No reason provided"}`);
-  }
+    logger.warn(
+      `Shard ${shardId} disconnected: code ${closeEvent.code}, reason: ${closeEvent.reason || "No reason provided"}`
+    );
+  },
 };

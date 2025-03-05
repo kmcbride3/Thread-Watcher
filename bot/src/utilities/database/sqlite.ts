@@ -32,21 +32,19 @@ class sqlite implements Database {
     return new Promise((resolve) => {
       this.db
         .prepare(
-          "CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, server TEXT, dueArchive INTEGER, watching INTEGER)",
+          "CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, server TEXT, dueArchive INTEGER, watching INTEGER)"
         )
         .run();
       this.db
         .prepare(
-          "CREATE TABLE IF NOT EXISTS channels (id TEXT PRIMARY KEY, server TEXT, regex TEXT, roles TEXT, tags TEXT)",
+          "CREATE TABLE IF NOT EXISTS channels (id TEXT PRIMARY KEY, server TEXT, regex TEXT, roles TEXT, tags TEXT)"
         )
         .run();
-      this.db.prepare(
-        "CREATE TABLE IF NOT EXISTS blacklist (id TEXT PRIMARY KEY, reason TEXT)",
-      );
+      this.db.prepare("CREATE TABLE IF NOT EXISTS blacklist (id TEXT PRIMARY KEY, reason TEXT)");
       // we aint normalising this bitch
       this.db
         .prepare(
-          "CREATE TABLE IF NOT EXISTS config (server TEXT, cfg_id TEXT, value TEXT, PRIMARY KEY (server, cfg_id))",
+          "CREATE TABLE IF NOT EXISTS config (server TEXT, cfg_id TEXT, value TEXT, PRIMARY KEY (server, cfg_id))"
         )
         .run();
       resolve();
@@ -55,18 +53,14 @@ class sqlite implements Database {
 
   setConfigValue(server: string, key: string, value: string): Promise<void> {
     return new Promise((resolve) => {
-      this.db
-        .prepare("REPLACE INTO config VALUES(?,?,?)")
-        .run(server, key, value);
+      this.db.prepare("REPLACE INTO config VALUES(?,?,?)").run(server, key, value);
       resolve();
     });
   }
 
   deleteConfigValue(server: string, key: string): Promise<void> {
     return new Promise((resolve) => {
-      this.db
-        .prepare("DELETE FROM config WHERE server = ? AND cfg_id = ?")
-        .run(server, key);
+      this.db.prepare("DELETE FROM config WHERE server = ? AND cfg_id = ?").run(server, key);
       resolve();
     });
   }
@@ -93,18 +87,14 @@ class sqlite implements Database {
 
   insertThread(id: string, dueArchive: number, server: string): Promise<void> {
     return new Promise((resolve) => {
-      this.db
-        .prepare("REPLACE INTO threads VALUES(?,?,?,1)")
-        .run(id, server, dueArchive);
+      this.db.prepare("REPLACE INTO threads VALUES(?,?,?,1)").run(id, server, dueArchive);
       resolve();
     });
   }
 
   updateDueArchive(id: string, dueArchive: number): Promise<void> {
     return new Promise((resolve) => {
-      this.db
-        .prepare("UPDATE threads SET dueArchive = ? WHERE id = ?")
-        .run(dueArchive, id);
+      this.db.prepare("UPDATE threads SET dueArchive = ? WHERE id = ?").run(dueArchive, id);
       resolve();
     });
   }
@@ -126,7 +116,7 @@ class sqlite implements Database {
               roles: item?.roles?.split(",") || [],
             };
             return rv;
-          }),
+          })
       );
       resolve(returnArr);
     });
@@ -136,9 +126,7 @@ class sqlite implements Database {
     return new Promise((resolve) => {
       const returnArr: ThreadData[] = [];
       returnArr.push(
-        ...(this.db
-          .prepare("SELECT * FROM threads WHERE server = ?")
-          .all(server) as ThreadData[]),
+        ...(this.db.prepare("SELECT * FROM threads WHERE server = ?").all(server) as ThreadData[])
       );
       resolve(returnArr);
     });
@@ -168,9 +156,7 @@ class sqlite implements Database {
 
   unwatchThread(threadID: string): Promise<void> {
     return new Promise((resolve) => {
-      this.db
-        .prepare("UPDATE threads SET watching = 0 WHERE id = ?")
-        .run(threadID);
+      this.db.prepare("UPDATE threads SET watching = 0 WHERE id = ?").run(threadID);
       resolve();
     });
   }
@@ -219,13 +205,15 @@ class sqlite implements Database {
       const threads = this.db
         .prepare("SELECT id, server, dueArchive, watching FROM threads WHERE watching = 1")
         .all() as ThreadRow[];
-      
-      resolve(threads.map(thread => ({
-        id: thread.id,
-        server: thread.server,
-        dueArchive: thread.dueArchive,
-        watching: Boolean(thread.watching)
-      })));
+
+      resolve(
+        threads.map((thread) => ({
+          id: thread.id,
+          server: thread.server,
+          dueArchive: thread.dueArchive,
+          watching: Boolean(thread.watching),
+        }))
+      );
     });
   }
 

@@ -4,17 +4,14 @@ import {
   ButtonStyle,
   ComponentEmojiResolvable,
   Collection,
-  MessageFlagsBitField
+  MessageFlagsBitField,
 } from "discord.js";
 import TwGenericComponent from "../interfaces/genericComponent";
 
 type buttonOnClick = (interaction: ButtonInteraction) => void;
 export type buttonFilter = (interaction: ButtonInteraction) => boolean;
 
-const ButtonInteractionQueue: Collection<string, TwButton> = new Collection<
-  string,
-  TwButton
->();
+const ButtonInteractionQueue: Collection<string, TwButton> = new Collection<string, TwButton>();
 
 export { ButtonInteractionQueue };
 
@@ -38,20 +35,16 @@ export default class TwButton implements TwGenericComponent<ButtonInteraction> {
       disabled?: boolean;
       emoji?: ComponentEmojiResolvable;
       url?: string;
-    },
+    }
   ) {
     // There is a chance that an id collision can happen but its very VERY slight
     // esp as the button only exists temporarily
     this.id = `${Math.floor(Math.random() * 10_000_000)}`;
 
-    this.button = new ButtonBuilder()
-      .setLabel(label)
-      .setStyle(style)
-      .setCustomId(this.id);
+    this.button = new ButtonBuilder().setLabel(label).setStyle(style).setCustomId(this.id);
 
     if (!misc) return;
-    if (typeof misc.disabled != "undefined")
-      this.button.setDisabled(misc.disabled);
+    if (typeof misc.disabled != "undefined") this.button.setDisabled(misc.disabled);
     if (misc.emoji) this.button.setEmoji(misc.emoji);
     if (misc.url) this.button.setURL(misc.url);
   }

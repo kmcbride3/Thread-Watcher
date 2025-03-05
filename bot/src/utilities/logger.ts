@@ -1,19 +1,32 @@
 import Log75, { LogLevel } from "log75";
-import fs from 'fs';
-import path from 'path';
-import { stripVTControlCharacters } from 'util';
+import fs from "fs";
+import path from "path";
+import { stripVTControlCharacters } from "util";
 import { appendFileSync, existsSync, mkdirSync } from "fs";
 import { join } from "path";
-import { trackInitState } from './debugUtils';
+import { trackInitState } from "./debugUtils";
 
 const logDir = join(__dirname, "../../data");
 const logFile = join(logDir, "thread-watcher.log");
-const logFilePath = path.join(__dirname, '../../data/thread-watcher.log');
+const logFilePath = path.join(__dirname, "../../data/thread-watcher.log");
 
-let configSettings: { logLevel: string, logBold: boolean, logInverted: boolean, logToFile: boolean };
+let configSettings: {
+  logLevel: string;
+  logBold: boolean;
+  logInverted: boolean;
+  logToFile: boolean;
+};
 
 export class Log76 extends Log75 {
-  constructor(level: number, options: { color: boolean; bold?: boolean; inverted?: boolean; maxTypeLength?: 5 }) {
+  constructor(
+    level: number,
+    options: {
+      color: boolean;
+      bold?: boolean;
+      inverted?: boolean;
+      maxTypeLength?: 5;
+    }
+  ) {
     super(level ?? 1, options);
   }
 
@@ -83,25 +96,30 @@ export const initLogger = (options: LoggerOptions = {}): void => {
     return;
   }
   loggerInitialized = true;
-  
+
   // Only show initialization message if not silent
   if (!options.silent) {
     console.info(`Initializing logger in process ${process.pid}`);
   }
-  
+
   // Store the config from index.ts here
-  configSettings = options as { logLevel: string, logBold: boolean, logInverted: boolean, logToFile: boolean };
+  configSettings = options as {
+    logLevel: string;
+    logBold: boolean;
+    logInverted: boolean;
+    logToFile: boolean;
+  };
   // Using Log75's built-in levels and mapping our config log level.
-  const envLogLevel = process.env.LOG_LEVEL || 'Standard';
+  const envLogLevel = process.env.LOG_LEVEL || "Standard";
   logLevel = LogLevel[envLogLevel as keyof typeof LogLevel] ?? LogLevel.Standard;
   // Pass the additional options 'bold' and 'inverted' to the constructor:
-  logger = new Log76(logLevel, { 
+  logger = new Log76(logLevel, {
     color: true,
     bold: options.logBold ?? false,
     inverted: options.logInverted ?? false,
-    maxTypeLength: 5
+    maxTypeLength: 5,
   });
-  
+
   logger.debug(`Logger initialized with Log level set to ${envLogLevel} (${logLevel}).`);
 };
 
@@ -117,12 +135,12 @@ export const initLogFile = () => {
   try {
     const stats = fs.statSync(logFilePath);
     if (stats.isDirectory()) {
-      fs.renameSync(logFilePath, logFilePath + '.old');
-      fs.writeFileSync(logFilePath, '', { mode: 0o666 });
+      fs.renameSync(logFilePath, logFilePath + ".old");
+      fs.writeFileSync(logFilePath, "", { mode: 0o666 });
     }
   } catch (e: unknown) {
-    if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
-      fs.writeFileSync(logFilePath, '', { mode: 0o666 });
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+      fs.writeFileSync(logFilePath, "", { mode: 0o666 });
     } else {
       throw e;
     }

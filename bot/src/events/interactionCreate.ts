@@ -6,7 +6,7 @@ import {
   AutocompleteInteraction,
   Events,
   Interaction,
-  MessageFlagsBitField
+  MessageFlagsBitField,
 } from "discord.js";
 import { config, logger } from "../index";
 import { commands } from "../bot";
@@ -23,7 +23,7 @@ import TwGenericComponent from "../interfaces/genericComponent";
 const buildBaseEmbed: BuildBaseEmbedFunction = (
   title: string,
   status: statusType = statusType.info,
-  misc?: baseEmbedOptions,
+  misc?: baseEmbedOptions
 ): EmbedBuilder => {
   const style = config.style[status];
   const embed = new EmbedBuilder()
@@ -42,8 +42,8 @@ const buildBaseEmbed: BuildBaseEmbedFunction = (
  * Helper function to send a response with the embed
  */
 const sendResponse = async (
-  interaction: ChatInputCommandInteraction, 
-  embed: EmbedBuilder, 
+  interaction: ChatInputCommandInteraction,
+  embed: EmbedBuilder,
   options?: baseEmbedOptions
 ): Promise<void> => {
   try {
@@ -58,9 +58,9 @@ const sendResponse = async (
     const responseOptions = {
       embeds: [embed],
       components: [...(options?.components || [])],
-      ephemeral: true
+      ephemeral: true,
     };
-    
+
     if (interaction.replied || interaction.deferred) {
       await interaction.editReply(responseOptions);
     } else {
@@ -82,20 +82,20 @@ function handleCommandError(err: unknown, interaction: ChatInputCommandInteracti
   } else {
     logger.error(`Command execution failed with unknown error: ${String(err)}`);
   }
-  
+
   // Try to respond to the user
   try {
     const errDetails = `
 If this error persists, please report it ${
-  config.devServerInvite && config.devServerInvite !== "https://discord.gg/server"
-    ? `on the [support server](${config.devServerInvite})`
-    : "on the repository issues"
-}.
+      config.devServerInvite && config.devServerInvite !== "https://discord.gg/server"
+        ? `on the [support server](${config.devServerInvite})`
+        : "on the repository issues"
+    }.
 `;
-    
+
     const errorOptions = {
       content: `There was an error executing this command!\n${errDetails}`,
-      ephemeral: true // Changed from flags to ephemeral property
+      ephemeral: true, // Changed from flags to ephemeral property
     };
 
     if (interaction.replied || interaction.deferred) {
@@ -113,77 +113,66 @@ If this error persists, please report it ${
  * @returns null if all checks pass, or an error embed if any check fails
  */
 function validateGatekeeping(
-  interaction: ChatInputCommandInteraction, 
+  interaction: ChatInputCommandInteraction,
   command: Command
 ): EmbedBuilder | null {
   const gatekeeping = command.gatekeeping;
   if (!gatekeeping) return null;
-  
+
   // Check owner permissions
   if (gatekeeping.ownerOnly && !config.owners.includes(interaction.user.id)) {
-    return buildBaseEmbed(
-      "Owner Only", 
-      statusType.error, 
-      {
-        description: `Command \`${interaction.commandName}\` is restricted to owner${config.owners.length > 1 ? "s" : ""}.`,
-        ephermal: true
-      }
-    );
+    return buildBaseEmbed("Owner Only", statusType.error, {
+      description: `Command \`${interaction.commandName}\` is restricted to owner${config.owners.length > 1 ? "s" : ""}.`,
+      ephermal: true,
+    });
   }
 
   // Check dev server only
-  if (gatekeeping.devServerOnly && 
-      interaction.guild && 
-      config.devServer && 
-      interaction.guild.id !== config.devServer) {
-    return buildBaseEmbed(
-      "Dev Server Only", 
-      statusType.error, 
-      {
-        description: `Command \`${interaction.commandName}\` can only be used in the development server.`,
-        ephermal: true
-      }
-    );
+  if (
+    gatekeeping.devServerOnly &&
+    interaction.guild &&
+    config.devServer &&
+    interaction.guild.id !== config.devServer
+  ) {
+    return buildBaseEmbed("Dev Server Only", statusType.error, {
+      description: `Command \`${interaction.commandName}\` can only be used in the development server.`,
+      ephermal: true,
+    });
   }
-  
+
   // Check user permissions
-  if (gatekeeping.userPermissions && !interaction.memberPermissions?.has(gatekeeping.userPermissions)) {
+  if (
+    gatekeeping.userPermissions &&
+    !interaction.memberPermissions?.has(gatekeeping.userPermissions)
+  ) {
     const missing = interaction.memberPermissions?.missing(gatekeeping.userPermissions);
-    return buildBaseEmbed(
-      "Missing Permissions", 
-      statusType.error, 
-      {
-        description: `Command \`${interaction.commandName}\` requires additional permissions.`,
-        fields: [
-          {
-            name: "You are missing",
-            value: `${missing?.map((m) => `\`${m}\``).join(", ") || "None"}`,
-          },
-        ],
-        ephermal: true,
-      }
-    );
+    return buildBaseEmbed("Missing Permissions", statusType.error, {
+      description: `Command \`${interaction.commandName}\` requires additional permissions.`,
+      fields: [
+        {
+          name: "You are missing",
+          value: `${missing?.map((m) => `\`${m}\``).join(", ") || "None"}`,
+        },
+      ],
+      ephermal: true,
+    });
   }
 
   // Check bot permissions
   if (gatekeeping.botPermissions && !interaction.appPermissions?.has(gatekeeping.botPermissions)) {
     const missing = interaction.appPermissions?.missing(gatekeeping.botPermissions);
-    return buildBaseEmbed(
-      "Missing Permissions", 
-      statusType.error, 
-      {
-        description: `Command \`${interaction.commandName}\` requires the bot to have additional permissions.`,
-        fields: [
-          {
-            name: "I am missing",
-            value: `${missing?.map((m) => `\`${m}\``).join(", ") || "None"}`,
-          }
-        ],
-        ephermal: true
-      }
-    );
+    return buildBaseEmbed("Missing Permissions", statusType.error, {
+      description: `Command \`${interaction.commandName}\` requires the bot to have additional permissions.`,
+      fields: [
+        {
+          name: "I am missing",
+          value: `${missing?.map((m) => `\`${m}\``).join(", ") || "None"}`,
+        },
+      ],
+      ephermal: true,
+    });
   }
-  
+
   // All checks passed
   return null;
 }
@@ -212,10 +201,10 @@ function handleComponentInteraction<T extends BaseInteraction & { customId: stri
   const component = queue.get(interaction.customId);
   if (component) {
     component._middleware(interaction);
-  } else if (interaction.isRepliable()) {   
+  } else if (interaction.isRepliable()) {
     interaction.reply({
       content: `No handler found for interaction with id \`${interaction.customId}\`.`,
-      flags: [MessageFlagsBitField.Flags.Ephemeral]
+      flags: [MessageFlagsBitField.Flags.Ephemeral],
     });
   }
 }
@@ -226,33 +215,33 @@ export default {
   async execute(interaction: Interaction): Promise<void> {
     if (interaction.isChatInputCommand()) {
       const command = commands.get(interaction.commandName);
-      
+
       // Handle unknown commands
       if (!command) {
         if (interaction.isRepliable()) {
-          await interaction.reply({ 
-            content: `Command \`${interaction.commandName}\` not found.`, 
-            flags: [MessageFlagsBitField.Flags.Ephemeral] 
+          await interaction.reply({
+            content: `Command \`${interaction.commandName}\` not found.`,
+            flags: [MessageFlagsBitField.Flags.Ephemeral],
           });
         }
         return;
       }
-      
+
       // Check if channel exists
       if (!interaction.channel) {
-        sendResponse(interaction, buildBaseEmbed(
-          "Unknown Channel", 
-          statusType.error, 
-          {
-            description: "Your interaction happened in an unknown channel.\n" +
-                        "**If this is a DM:** run it in a server. Thread-Watcher does not support DMs\n" +
-                        "**If this is not a DM:** something went wrong. Try again later.",
-            ephermal: true
-          }
-        ));
+        sendResponse(
+          interaction,
+          buildBaseEmbed("Unknown Channel", statusType.error, {
+            description:
+              "Your interaction happened in an unknown channel.\n" +
+              "**If this is a DM:** run it in a server. Thread-Watcher does not support DMs\n" +
+              "**If this is not a DM:** something went wrong. Try again later.",
+            ephermal: true,
+          })
+        );
         return;
       }
-      
+
       // Perform all gatekeeping checks
       const gatekeepingError = validateGatekeeping(interaction, command);
       if (gatekeepingError) {
@@ -263,12 +252,12 @@ export default {
       // Create a wrapped version of buildBaseEmbed that also sends the response
       const wrappedBuildBaseEmbed: BuildBaseEmbedFunction = (title, status, options) => {
         const embed = buildBaseEmbed(title, status, options);
-        
+
         // Send the response unless noSend is specified
         if (!options?.noSend) {
           sendResponse(interaction, embed, options);
         }
-        
+
         return embed;
       };
 
@@ -276,25 +265,25 @@ export default {
       try {
         // Use run if available, otherwise fall back to execute for backwards compatibility
         if (command.run) {
-          await command.run(interaction, wrappedBuildBaseEmbed).catch(err => {
+          await command.run(interaction, wrappedBuildBaseEmbed).catch((err) => {
             handleCommandError(err, interaction);
           });
         } else if (command.execute) {
-          await command.execute(interaction, wrappedBuildBaseEmbed).catch(err => {
+          await command.execute(interaction, wrappedBuildBaseEmbed).catch((err) => {
             handleCommandError(err, interaction);
           });
         } else {
           logger.error(`Command ${interaction.commandName} has neither run nor execute methods`);
-          await interaction.reply({ 
-            content: 'There was an error with this command implementation!', 
-            flags: [MessageFlagsBitField.Flags.Ephemeral] 
+          await interaction.reply({
+            content: "There was an error with this command implementation!",
+            flags: [MessageFlagsBitField.Flags.Ephemeral],
           });
         }
       } catch (error) {
         logger.error(`Unhandled error in command ${interaction.commandName}: ${error}`);
         handleCommandError(error, interaction);
       }
-    } 
+    }
     // Handle other interaction types
     else if (interaction.isAutocomplete()) {
       await handleAutoComplete(interaction);

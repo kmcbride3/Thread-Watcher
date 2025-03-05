@@ -1,8 +1,4 @@
-import {
-  ChatInputCommandInteraction,
-  PermissionFlagsBits,
-  SlashCommandBuilder,
-} from "discord.js";
+import { ChatInputCommandInteraction, PermissionFlagsBits, SlashCommandBuilder } from "discord.js";
 import { Command, statusType } from "../../interfaces/command";
 import { database as db } from "../../index";
 
@@ -17,14 +13,13 @@ const info: Command = {
     const command = interaction.options.getSubcommand(true);
 
     const alrExists = (await db.getChannels(interaction.guildId ?? "")).find(
-      (t) => t.id == channel.id,
+      (t) => t.id == channel.id
     );
 
     if (command === "add") {
       if (alrExists) {
         buildBaseEmbed("Already watched", statusType.warning, {
-          description:
-            "That channel is already watched. Remove it with `/channel remove`",
+          description: "That channel is already watched. Remove it with `/channel remove`",
         });
         return;
       }
@@ -59,8 +54,8 @@ const info: Command = {
           option
             .setName("channel")
             .setDescription("the channel or category you want to add")
-            .setRequired(true),
-        ),
+            .setRequired(true)
+        )
     )
     .addSubcommand((sub) =>
       sub
@@ -70,8 +65,8 @@ const info: Command = {
           option
             .setName("channel")
             .setDescription("the channel or category you want to remove")
-            .setRequired(true),
-        ),
+            .setRequired(true)
+        )
     ),
 };
 

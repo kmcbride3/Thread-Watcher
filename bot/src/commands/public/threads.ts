@@ -7,9 +7,7 @@ const info: Command = {
       description: "the `/threads` command has been moved to `/list`",
     });
   },
-  data: new SlashCommandBuilder()
-    .setName("threads")
-    .setDescription("deprecated"),
+  data: new SlashCommandBuilder().setName("threads").setDescription("deprecated"),
 };
 
 export default info;

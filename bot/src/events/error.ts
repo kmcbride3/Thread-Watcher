@@ -7,5 +7,5 @@ export default {
   execute(error: Error) {
     logger.error(`Discord client error: ${error.message}`);
     logger.error(error.stack || "No stack trace available");
-  }
-}
+  },
+};

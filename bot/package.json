@@ -14,7 +14,12 @@
     "build": "yarn clean && tsc",
     "start": "node ./dist/index.js",
     "lint": "eslint . --ext .ts",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "fix": "yarn format && yarn fix:lint",
+    "fix:lint": "eslint . --ext .ts,js,mjs --fix",
+    "fix:simple": "eslint . --ext .ts,js,mjs --fix --fix-type layout,problem",
+    "fix:import": "eslint . --ext .ts,js --fix --rule '@typescript-eslint/no-unused-vars: 0'",
+    "lint:report": "eslint . --ext .ts,js,mjs -o eslint-report.html -f html"
   },
   "dependencies": {
     "better-sqlite3": "^11.8.1",

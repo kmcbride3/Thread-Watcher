@@ -8,10 +8,7 @@ export function regMatch(str: string, reg: RegExp, inverted: boolean) {
   return reg.test(str) === !inverted;
 }
 
-export async function threadShouldBeWatched(
-  auto: ChannelData,
-  thread: ThreadChannel,
-) {
+export async function threadShouldBeWatched(auto: ChannelData, thread: ThreadChannel) {
   auto.roles = auto.roles.filter((s) => !(s?.trim() == ""));
   auto.tags = auto.tags.filter((s) => !(s?.trim() == ""));
   const reg = auto.regex.length != 0 ? strToRegex(auto.regex) : false;
@@ -23,11 +20,9 @@ export async function threadShouldBeWatched(
     let rolePasses = false;
     for (const role of auto.roles) {
       const owner = thread.ownerId
-        ? await thread.guild.members
-            .fetch({ force: true, user: thread.ownerId })
-            .catch((error) => {
-              logger.error(`Failed to fetch thread owner: ${error}`);
-            })
+        ? await thread.guild.members.fetch({ force: true, user: thread.ownerId }).catch((error) => {
+            logger.error(`Failed to fetch thread owner: ${error}`);
+          })
         : null;
       if (!role) break;
       if (owner?.roles.cache.has(role)) rolePasses = true;
@@ -66,24 +61,20 @@ export default {
     if (!auto) return;
 
     if (await threadShouldBeWatched(auto, thread)) {
-      logger.info(
-        `Automatically adding thread "${thread.id}" in ${thread.guildId}`,
-      );
+      logger.info(`Automatically adding thread "${thread.id}" in ${thread.guildId}`);
       addThread(
         thread.id,
         dueArchiveTimestamp(thread.autoArchiveDuration || 0) as number,
-        thread.guildId,
-      ).then(() => {
-        logger.done(`Thread "${thread.id}" added successfully in ${thread.guildId}`);
-      }).catch((err) => {
-        logger.error(
-          `could not add thread "${thread.id}" in ${thread.guildId}: ${err.message}`,
-        );
-      });
+        thread.guildId
+      )
+        .then(() => {
+          logger.done(`Thread "${thread.id}" added successfully in ${thread.guildId}`);
+        })
+        .catch((err) => {
+          logger.error(`could not add thread "${thread.id}" in ${thread.guildId}: ${err.message}`);
+        });
     } else {
-      logger.info(
-        `Not adding thread "${thread.id}" in ${thread.guildId} as filters prevent it`,
-      );
+      logger.info(`Not adding thread "${thread.id}" in ${thread.guildId} as filters prevent it`);
     }
-  }
-}
+  },
+};

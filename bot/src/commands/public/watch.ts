@@ -4,7 +4,7 @@ import {
   SlashCommandBuilder,
   ThreadChannel,
   DiscordAPIError,
-  MessageFlagsBitField
+  MessageFlagsBitField,
 } from "discord.js";
 import {
   addThread,
@@ -25,20 +25,22 @@ interface ThreadWatchOptions {
 
 const watch: Command = {
   run: async (
-    interaction: ChatInputCommandInteraction, 
+    interaction: ChatInputCommandInteraction,
     buildBaseEmbed: BuildBaseEmbedFunction
   ): Promise<void> => {
-    await interaction.deferReply({ flags: [MessageFlagsBitField.Flags.Ephemeral] });
+    await interaction.deferReply({
+      flags: [MessageFlagsBitField.Flags.Ephemeral],
+    });
     const thread: ThreadChannel | null =
-      interaction.options.getChannel("thread") as ThreadChannel || interaction.channel as ThreadChannel;
+      (interaction.options.getChannel("thread") as ThreadChannel) ||
+      (interaction.channel as ThreadChannel);
     if (!thread) {
       const embed = buildBaseEmbed("Something went wrong", statusType.error, {
-        description:
-          "for forum posts you __need__ to pass the post with the `thread` option.",
+        description: "for forum posts you __need__ to pass the post with the `thread` option.",
       });
       await interaction.reply({
         embeds: [embed],
-        flags: [MessageFlagsBitField.Flags.Ephemeral]
+        flags: [MessageFlagsBitField.Flags.Ephemeral],
       });
       return;
     }
@@ -48,7 +50,7 @@ const watch: Command = {
       });
       await interaction.reply({
         embeds: [embed],
-        flags: [MessageFlagsBitField.Flags.Ephemeral]
+        flags: [MessageFlagsBitField.Flags.Ephemeral],
       });
       return;
     }
@@ -69,17 +71,14 @@ const watch: Command = {
           });
           await interaction.reply({
             embeds: [embed],
-            flags: [MessageFlagsBitField.Flags.Ephemeral]
+            flags: [MessageFlagsBitField.Flags.Ephemeral],
           });
         });
     } else {
       addThread(
         thread.id,
-        dueArchiveTimestamp(
-          thread.autoArchiveDuration || 0,
-          thread.lastMessage?.createdAt,
-        ),
-        interaction.guildId || "",
+        dueArchiveTimestamp(thread.autoArchiveDuration || 0, thread.lastMessage?.createdAt),
+        interaction.guildId || ""
       )
         .then((): void => {
           if (!thread.archived || thread.unarchivable) {
@@ -106,7 +105,7 @@ const watch: Command = {
           });
           await interaction.reply({
             embeds: [embed],
-            flags: [MessageFlagsBitField.Flags.Ephemeral]
+            flags: [MessageFlagsBitField.Flags.Ephemeral],
           });
         });
     }
@@ -116,9 +115,7 @@ const watch: Command = {
     ownerOnly: false,
     devServerOnly: false,
   },
-  data: new SlashCommandBuilder()
-    .setName("watch")
-    .setDescription("watch or unwatch a thread"),
+  data: new SlashCommandBuilder().setName("watch").setDescription("watch or unwatch a thread"),
   externalOptions: [
     {
       channel_types: [10, 11, 12, 16],

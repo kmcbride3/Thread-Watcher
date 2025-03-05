@@ -13,15 +13,15 @@ const invalidRequestLog: Record<string, number> = {
  */
 function getStatusCode(error: unknown): number | null {
   // Handle Discord.js API errors
-  if (error && typeof error === 'object') {
+  if (error && typeof error === "object") {
     // Check for common error formats
-    if ('status' in error && typeof error.status === 'number') {
+    if ("status" in error && typeof error.status === "number") {
       return error.status;
     }
-    if ('statusCode' in error && typeof error.statusCode === 'number') {
+    if ("statusCode" in error && typeof error.statusCode === "number") {
       return error.statusCode;
     }
-    if ('code' in error && typeof error.code === 'number') {
+    if ("code" in error && typeof error.code === "number") {
       return error.code;
     }
   }
@@ -37,7 +37,7 @@ function getStatusCode(error: unknown): number | null {
  * @returns Promise that resolves with the retry result or rejects if all retries fail
  */
 export async function handleApiError<T>(
-  error: unknown, 
+  error: unknown,
   retryFn: () => Promise<T>,
   maxRetries = 1,
   delay = 1000
@@ -48,7 +48,7 @@ export async function handleApiError<T>(
     const statusString = statusCode.toString();
     if (statusString in invalidRequestLog) {
       invalidRequestLog[statusString]++;
-      
+
       // Log different messages based on status code
       switch (statusCode) {
         case 401:
@@ -66,24 +66,29 @@ export async function handleApiError<T>(
           logger.warn("API Error: Resource not found. It may have been deleted.");
           break;
         default:
-          logger.warn(`API Error (${statusCode}): ${error instanceof Error ? error.message : String(error)}`);
+          logger.warn(
+            `API Error (${statusCode}): ${error instanceof Error ? error.message : String(error)}`
+          );
       }
     } else {
-      logger.warn(`API Error (${statusCode}): ${error instanceof Error ? error.message : String(error)}`);
+      logger.warn(
+        `API Error (${statusCode}): ${error instanceof Error ? error.message : String(error)}`
+      );
     }
   } else {
     // Generic error handling for non-HTTP errors
     logger.warn(`API Error: ${error instanceof Error ? error.message : String(error)}`);
   }
-  
+
   // Check if we should retry
-  if (maxRetries <= 0 || (statusCode === 404)) { // Don't retry 404s
+  if (maxRetries <= 0 || statusCode === 404) {
+    // Don't retry 404s
     throw error;
   }
-  
+
   // Wait before retrying, with increased delay for rate limits
-  await new Promise(resolve => setTimeout(resolve, delay));
-  
+  await new Promise((resolve) => setTimeout(resolve, delay));
+
   try {
     // Attempt retry
     logger.debug(`Retrying operation (${maxRetries} attempts remaining)`);
@@ -101,6 +106,6 @@ export const logInvalidRequests = () => {
   const logString = Object.entries(invalidRequestLog)
     .map(([code, count]) => `${code}: ${count}`)
     .join(", ");
-  
+
   logger.info(`Invalid request stats: ${logString || "None"}`);
 };

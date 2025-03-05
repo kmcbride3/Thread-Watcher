@@ -17,7 +17,7 @@ import {
   ButtonBuilder,
   Interaction,
   ButtonInteraction,
-  MessageFlagsBitField
+  MessageFlagsBitField,
 } from "discord.js";
 import { Command } from "../../interfaces/command";
 import { config, db } from "../../index";
@@ -41,7 +41,7 @@ interface field {
 const fitIntoFields = (
   name: string,
   values: string[],
-  totalLength = 0,
+  totalLength = 0
 ): { fieldArr: field[]; totalLength: number } => {
   // Embed limits https://discord.com/developers/docs/resources/channel#embed-object-embed-limits
   const MAXLENGTH = 1024;
@@ -78,7 +78,7 @@ const fitIntoFields = (
 };
 
 export function getDirectTag(
-  c: ThreadChannel | TextChannel | ForumChannel | NewsChannel | CategoryChannel,
+  c: ThreadChannel | TextChannel | ForumChannel | NewsChannel | CategoryChannel
 ) {
   return `[#${c.name}](https://discord.com/channels/${c.guildId}/${c.id})`;
 }
@@ -98,9 +98,7 @@ const getChannels = async (interaction: ChatInputCommandInteraction) => {
   const channels = await db.getChannels(interaction.guildId);
 
   for (const channelData of channels) {
-    const channel = await interaction.client.channels
-      .fetch(channelData.id)
-      .catch(() => {});
+    const channel = await interaction.client.channels.fetch(channelData.id).catch(() => {});
     if (channel) {
       if (
         !(
@@ -112,11 +110,7 @@ const getChannels = async (interaction: ChatInputCommandInteraction) => {
         )
       )
         break;
-      if (
-        channel
-          .permissionsFor(interaction.member)
-          .has(PermissionFlagsBits.ViewChannel)
-      ) {
+      if (channel.permissionsFor(interaction.member).has(PermissionFlagsBits.ViewChannel)) {
         returnValues.okValues.push({
           text: getDirectTag(channel),
           id: channel.id,
@@ -138,17 +132,11 @@ const getThreads = async (interaction: ChatInputCommandInteraction) => {
 
   const threads = await db.getThreads(interaction.guildId);
   for (const _t of threads) {
-    const thread = await interaction.client.channels
-      .fetch(_t.id)
-      .catch(() => {});
+    const thread = await interaction.client.channels.fetch(_t.id).catch(() => {});
     if (thread) {
-      if (
-        thread.type !== ChannelType.PrivateThread &&
-        thread.type !== ChannelType.PublicThread
-      )
+      if (thread.type !== ChannelType.PrivateThread && thread.type !== ChannelType.PublicThread)
         return;
-      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ViewChannel))
-        continue;
+      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ViewChannel)) continue;
       if (!_t.watching) continue;
       // This is used instead of hotlinking ( <#ID> ) as discord shows un-cached threads as #deleted-channel if not in sidebar
       // even when thread is un-archived
@@ -170,13 +158,11 @@ const threads: Command = {
     const show = interaction.options.getString("show") || "thread";
 
     // Only allow users with ManageThreads to create public /threads messages
-    if (
-      !interaction.memberPermissions?.has(PermissionFlagsBits.ManageThreads) &&
-      pub
-    )
-      pub = false;
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageThreads) && pub) pub = false;
 
-    await interaction.deferReply({ flags: pub ? [] : [MessageFlagsBitField.Flags.Ephemeral] });
+    await interaction.deferReply({
+      flags: pub ? [] : [MessageFlagsBitField.Flags.Ephemeral],
+    });
 
     const res =
       show == "channel"
@@ -192,9 +178,7 @@ const threads: Command = {
     const chunks = Chunkable.from(fields, 5);
 
     function display(btnInteraction?: ButtonInteraction) {
-      const embed = new EmbedBuilder().setColor(
-        config.style.success.colour as ColorResolvable,
-      );
+      const embed = new EmbedBuilder().setColor(config.style.success.colour as ColorResolvable);
 
       const navCompontents = new ActionRowBuilder<ButtonBuilder>();
 
@@ -243,20 +227,13 @@ const threads: Command = {
     .setName("list")
     .setDescription("list your watched threads and channels")
     .addBooleanOption((o) =>
-      o
-        .setName("public")
-        .setDescription(
-          "do you want this message to be viewable for everyone?",
-        ),
+      o.setName("public").setDescription("do you want this message to be viewable for everyone?")
     )
     .addStringOption((o) =>
       o
         .setName("show")
         .setDescription("do you want to view watched threads or channels?")
-        .addChoices(
-          { name: "threads", value: "thread" },
-          { name: "channels", value: "channel" },
-        ),
+        .addChoices({ name: "threads", value: "thread" }, { name: "channels", value: "channel" })
     ),
 };
 

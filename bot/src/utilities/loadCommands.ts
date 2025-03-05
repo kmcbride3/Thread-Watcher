@@ -9,7 +9,7 @@ export default async function loadCommands(
   dirDive = ""
 ): Promise<Collection<string, Command>> {
   const commands = new Collection<string, Command>();
-  
+
   try {
     const p = path.join(__dirname, baseDir + (dirDive ? dirDive : ""));
     logger.debug(`Loading commands from: ${p}`);
@@ -18,26 +18,32 @@ export default async function loadCommands(
       try {
         const filePath = path.join(p, file);
         const fileStat = statSync(filePath);
-    
+
         if (fileStat.isFile() && file.endsWith(".js")) {
           const modulePath = path.join(baseDir, dirDive, file);
           const commandModule = await import(`${modulePath}?update=${Date.now()}`);
           const cmdReq = commandModule.default;
-        
+
           if (!cmdReq) {
             logger.warn(`"${baseDir}${dirDive}${file}" command does not export a default object`);
             continue;
           }
-          
+
           // Extract command properties
           const { run, data, gatekeeping, autocomplete, externalOptions } = cmdReq;
-          
+
           if (!run || !data) {
-            logger.warn(`"${baseDir}${dirDive}${file}" is not an acceptable command file. Missing: ${run ? "" : 'function "run"'} ${data ? "" : 'property "data"'}`);
+            logger.warn(
+              `"${baseDir}${dirDive}${file}" is not an acceptable command file. Missing: ${run ? "" : "function \"run\""} ${data ? "" : "property \"data\""}`
+            );
           } else {
             // Store command with all required properties
-            commands.set(file.split(".")[0], { 
-              run, data, gatekeeping, autocomplete, externalOptions 
+            commands.set(file.split(".")[0], {
+              run,
+              data,
+              gatekeeping,
+              autocomplete,
+              externalOptions,
             });
           }
         } else if (fileStat.isDirectory()) {
@@ -52,6 +58,6 @@ export default async function loadCommands(
   } catch (error) {
     logger.error(`Failed to read commands directory: ${error}`);
   }
-  
+
   return commands;
-};
+}

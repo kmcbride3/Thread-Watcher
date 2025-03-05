@@ -1,3 +1,4 @@
+/* eslint-disable semi */
 export default interface TwGenericComponent<TInteractionType> {
-    _middleware: ( interaction: TInteractionType ) => void
+  middleware: (interaction: TInteractionType) => void;
 }

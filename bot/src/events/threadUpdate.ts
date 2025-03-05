@@ -1,8 +1,14 @@
-import { Events, ThreadChannel } from "discord.js"
-import { db, logger } from "../index"
-import { addThread, bumpAutoTime, dueArchiveTimestamp, removeThread, setArchive } from "../utilities/threadActions"
-import { threadShouldBeWatched } from "./threadCreate"
-import { threadManager } from "../utilities/threadManager"
+import { Events, ThreadChannel } from "discord.js";
+import { db, logger } from "../index";
+import {
+  addThread,
+  bumpAutoTime,
+  dueArchiveTimestamp,
+  removeThread,
+  setArchive,
+} from "../utilities/threadActions";
+import { threadShouldBeWatched } from "./threadCreate";
+import { threadManager } from "../utilities/threadManager";
 
 export default {
   name: Events.ThreadUpdate,
@@ -10,61 +16,70 @@ export default {
   async execute(oldThread: ThreadChannel, newThread: ThreadChannel) {
     try {
       // Check for auto-watch rules
-      const auto = (await db.getChannels(newThread.guildId)).find(t => t.id == newThread.parentId) || 
-                   (await db.getChannels(newThread.guildId)).find(t => t.id == newThread.parent?.parentId)
+      const auto =
+        (await db.getChannels(newThread.guildId)).find((t) => t.id == newThread.parentId) ||
+        (await db.getChannels(newThread.guildId)).find((t) => t.id == newThread.parent?.parentId);
 
-      const watchedThreads = threadManager.getWatchedThreads()                 
-                   
-      if(auto) {
+      const watchedThreads = threadManager.getWatchedThreads();
+
+      if (auto) {
         // Get current watched status
-        const isWatched = watchedThreads.has(newThread.id)
+        const isWatched = watchedThreads.has(newThread.id);
 
-        if(await threadShouldBeWatched(auto, newThread)) {
+        if (await threadShouldBeWatched(auto, newThread)) {
           // Thread should be watched per rules
-          if(!isWatched) {
-            const thread = watchedThreads.get(newThread.id)
-            if(thread && !thread.watching) {
-              return logger.info(`NOT adding thread "${newThread.id}" in ${newThread.guildId} as watched is set to false (TU)`)
+          if (!isWatched) {
+            const thread = watchedThreads.get(newThread.id);
+            if (thread && !thread.watching) {
+              return logger.info(
+                `NOT adding thread "${newThread.id}" in ${newThread.guildId} as watched is set to false (TU)`
+              );
             }
-            logger.info(`Automatically adding thread "${newThread.id}" in ${newThread.guildId} (TU)`)
+            logger.info(
+              `Automatically adding thread "${newThread.id}" in ${newThread.guildId} (TU)`
+            );
             addThread(
-              newThread.id, 
-              dueArchiveTimestamp(newThread.autoArchiveDuration || 0) as number, 
+              newThread.id,
+              dueArchiveTimestamp(newThread.autoArchiveDuration || 0) as number,
               newThread.guildId
-            )
-            .catch(err => {
-              logger.error(`could not add thread "${newThread.id}" in ${newThread.guildId}: ${err.toString()}`)
-            })
+            ).catch((err) => {
+              logger.error(
+                `could not add thread "${newThread.id}" in ${newThread.guildId}: ${err.toString()}`
+              );
+            });
           }
         } else {
           // Thread should NOT be watched per rules
-          if(isWatched) {
-            logger.info(`Automatically removing thread "${newThread.id}" in ${newThread.guildId} (TU)`)
-            removeThread(newThread.id)
+          if (isWatched) {
+            logger.info(
+              `Automatically removing thread "${newThread.id}" in ${newThread.guildId} (TU)`
+            );
+            removeThread(newThread.id);
           }
         }
       }
 
       // Handle thread maintenance for watched threads
-      if(!watchedThreads.has(newThread.id)) return
-      
+      if (!watchedThreads.has(newThread.id)) return;
+
       // If thread is active (not archived/locked), update its due archive time
-      if(!newThread.archived && !newThread.locked) {
-        bumpAutoTime(newThread)
-          .catch((e) => {
-            logger.error(`failed to bump thread with id ${newThread.id}: ${e}`)
-          })
-        return
+      if (!newThread.archived && !newThread.locked) {
+        bumpAutoTime(newThread).catch((e) => {
+          logger.error(`failed to bump thread with id ${newThread.id}: ${e}`);
+        });
+        return;
       }
-      
+
       // Handle special cases
-      if(!newThread.unarchivable) {
+      if (!newThread.unarchivable) {
         // For some reason this line kept breaking???
-        logger.warn(`Skipped "${newThread.id}" in "${newThread.guildId}" as it is not unarchivable`)
-        return
+        logger.warn(
+          `Skipped "${newThread.id}" in "${newThread.guildId}" as it is not unarchivable`
+        );
+        return;
       } else if (newThread.locked) {
-        logger.warn(`Skipped "${newThread.id}" in "${newThread.guildId}" as it is locked`)
-        return
+        logger.warn(`Skipped "${newThread.id}" in "${newThread.guildId}" as it is locked`);
+        return;
       }
 
       /**
@@ -73,20 +88,20 @@ export default {
        * Bot still manages the "archived" state just fine but right now there's no way to explicitly set the "hidden" value.
        */
 
-      const AUTOARCHIVEDURATION = 10_080
+      const AUTOARCHIVEDURATION = 10_080;
       setArchive(newThread, AUTOARCHIVEDURATION)
         .then(() => {
-          if(newThread.autoArchiveDuration !== AUTOARCHIVEDURATION && newThread.manageable) {
-            newThread.setAutoArchiveDuration(AUTOARCHIVEDURATION)
+          if (newThread.autoArchiveDuration !== AUTOARCHIVEDURATION && newThread.manageable) {
+            newThread.setAutoArchiveDuration(AUTOARCHIVEDURATION);
           }
-          logger.info(`Unarchived "${newThread.id}" in "${newThread.guildId}"`)
+          logger.info(`Unarchived "${newThread.id}" in "${newThread.guildId}"`);
         })
-        .catch(err => {
-          logger.error(`Failed to unarchive "${newThread.id}" in "${newThread.guildId}\n${err}"`)
-        })
-    } catch(err) {
-      logger.error("Failed threadUpdate event (dump below)")
-      logger.error(String(err))
+        .catch((err) => {
+          logger.error(`Failed to unarchive "${newThread.id}" in "${newThread.guildId}\n${err}"`);
+        });
+    } catch (err) {
+      logger.error("Failed threadUpdate event (dump below)");
+      logger.error(String(err));
     }
-  }
-}
+  },
+};

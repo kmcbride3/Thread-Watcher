@@ -7,6 +7,6 @@ export default {
   once: false,
   execute(guild: Guild) {
     logger.info(`Bot removed from guild: ${guild.name} (ID: ${guild.id})`);
-    clearGuild(guild.id)
-  }
-}
+    clearGuild(guild.id);
+  },
+};

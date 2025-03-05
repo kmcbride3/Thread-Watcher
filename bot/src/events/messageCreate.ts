@@ -8,10 +8,9 @@ export default {
   once: false,
   execute(message: Message) {
     if (message.author.bot) return;
-    if(!message.channel || !message.channel.isThread() || !threads.has(message.channelId)) return
-    bumpAutoTime(message.channel)
-        .catch((e) => {
-            logger.error(`failed to bump thread with id ${message.channelId}: ${e}`)
-        })
-  }
+    if (!message.channel || !message.channel.isThread() || !threads.has(message.channelId)) return;
+    bumpAutoTime(message.channel).catch((e) => {
+      logger.error(`failed to bump thread with id ${message.channelId}: ${e}`);
+    });
+  },
 };

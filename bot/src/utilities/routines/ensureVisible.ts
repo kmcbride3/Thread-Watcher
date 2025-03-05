@@ -43,7 +43,15 @@ const summary = {
 
 let running = false;
 
-const handleError = async (err: { status?: number; code?: number; message: string; headers?: Record<string, string> }, retryFunction: () => Promise<void>) => {
+const handleError = async (
+  err: {
+    status?: number;
+    code?: number;
+    message: string;
+    headers?: Record<string, string>;
+  },
+  retryFunction: () => Promise<void>
+) => {
   const error = {
     statusCode: err.status || err.code || 500,
     message: err.message,
@@ -72,7 +80,7 @@ const makeVisible = () => {
             summary.fail_could_not_edit++;
             webLog(
               "Thread Update Failed",
-              `Failed to unarchive thread "${thread.id}" in channel "${thread.parentId}": ${err.message}`,
+              `Failed to unarchive thread "${thread.id}" in channel "${thread.parentId}": ${err.message}`
             );
           });
         });
@@ -98,7 +106,10 @@ const makeVisible = () => {
               return Promise.resolve();
             }).catch(() => {
               summary.fail_could_not_edit++;
-              webLog("Thread Update Failed", `Failed to set auto archive duration for thread "${thread.id}" in channel "${thread.parentId}": ${err.message}`);
+              webLog(
+                "Thread Update Failed",
+                `Failed to set auto archive duration for thread "${thread.id}" in channel "${thread.parentId}": ${err.message}`
+              );
             });
           });
           summary.worked++;
@@ -110,22 +121,20 @@ const makeVisible = () => {
               return Promise.resolve();
             }).catch(() => {
               summary.fail_could_not_edit++;
-              webLog("Thread Update Failed", `Failed to set auto archive duration for thread "${thread.id}" in channel "${thread.parentId}": ${err.message}`);
+              webLog(
+                "Thread Update Failed",
+                `Failed to set auto archive duration for thread "${thread.id}" in channel "${thread.parentId}": ${err.message}`
+              );
             });
           });
           summary.worked++;
         }
       } else if (!thread.manageable && thread.sendable && !thread.archived) {
-        if (
-          thread
-            .permissionsFor(thread.client.user.id)
-            ?.has(PermissionFlagsBits.EmbedLinks)
-        ) {
+        if (thread.permissionsFor(thread.client.user.id)?.has(PermissionFlagsBits.EmbedLinks)) {
           const e = new EmbedBuilder().setTitle("Bumping Thread").setFields([
             {
               name: "Why?",
-              value:
-                "this message is sent to bump activity so this thread does not get hidden.",
+              value: "this message is sent to bump activity so this thread does not get hidden.",
             },
             {
               name: "Tired of these messages?",
@@ -139,28 +148,39 @@ const makeVisible = () => {
               return Promise.resolve();
             }).catch(() => {
               summary.fail_could_not_edit++;
-              webLog("Thread Update Failed", `Failed to send bump message for thread "${thread.id}" in channel "${thread.parentId}": ${err.message}`);
+              webLog(
+                "Thread Update Failed",
+                `Failed to send bump message for thread "${thread.id}" in channel "${thread.parentId}": ${err.message}`
+              );
             });
           });
           summary.worked++;
         } else {
-          thread.send(
-            `**Bumping thread**\nDon't mind me, I'm just making sure this thread is visible under your channel 👉😎👉\n\n*prefer silent bumps? Give me \`manage threads\` in <#${thread.parentId}>*`,
-          ).catch(async (err: Error) => {
+          thread
+            .send(
+              `**Bumping thread**\nDon't mind me, I'm just making sure this thread is visible under your channel 👉😎👉\n\n*prefer silent bumps? Give me \`manage threads\` in <#${thread.parentId}>*`
+            )
+            .catch(async (err: Error) => {
               await handleError(err, async () => {
                 queue.unshift(t);
                 makeVisible();
                 return Promise.resolve();
               }).catch(() => {
                 summary.fail_could_not_edit++;
-                webLog("Thread Update Failed", `Failed to send bump message for thread "${thread.id}" in channel "${thread.parentId}": ${err.message}`);
+                webLog(
+                  "Thread Update Failed",
+                  `Failed to send bump message for thread "${thread.id}" in channel "${thread.parentId}": ${err.message}`
+                );
               });
             });
           summary.worked++;
         }
       } else {
         summary.failed_perms++;
-        webLog("Missing Permissions", `Missing permissions for thread "${thread.id}" in channel "${thread.parentId}"`);
+        webLog(
+          "Missing Permissions",
+          `Missing permissions for thread "${thread.id}" in channel "${thread.parentId}"`
+        );
       }
 
       bumpAutoTime(thread);
@@ -207,12 +227,14 @@ export function getPossiblyArchivedThreads(threads: ThreadData[]) {
 }
 
 export async function bumpThreadsRoutine(): Promise<void> {
-  const needsBump = getPossiblyArchivedThreads([...threads.values()].map(thread => ({
-    id: thread.id,
-    server: thread.server,
-    watching: thread.watching,
-    dueArchive: thread.dueArchive ?? 0,
-  })));
+  const needsBump = getPossiblyArchivedThreads(
+    [...threads.values()].map((thread) => ({
+      id: thread.id,
+      server: thread.server,
+      watching: thread.watching,
+      dueArchive: thread.dueArchive ?? 0,
+    }))
+  );
   if (needsBump.length === 0) {
     await logger.info("No threads to bump");
     return;

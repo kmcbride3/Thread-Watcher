@@ -17,11 +17,7 @@ export type ChannelData = ReturnData & {
 export interface Database {
   createTables: () => Promise<void>;
   insertChannel: (data: ChannelData) => Promise<void>;
-  insertThread: (
-    id: string,
-    dueArchive: number,
-    server: string,
-  ) => Promise<void>;
+  insertThread: (id: string, dueArchive: number, server: string) => Promise<void>;
   updateDueArchive: (id: string, dueArchive: number) => Promise<void>;
   getChannels: (server: string) => Promise<ChannelData[]>;
   getThreads: (server: string) => Promise<ThreadData[]>;
@@ -31,11 +27,7 @@ export interface Database {
   unwatchThread: (threadID: string) => Promise<void>;
   getNumberOfThreads: () => Promise<number>;
   getNumberOfChannels: () => Promise<number>;
-  setConfigValue: (
-    server: string,
-    key: string,
-    value: string,
-  ) => Promise<void>;
+  setConfigValue: (server: string, key: string, value: string) => Promise<void>;
   deleteConfigValue: (server: string, key: string) => Promise<void>;
   getConfigValue: (server: string, key: string) => Promise<string>;
   createBackup: (baseDir: string) => Promise<string>;

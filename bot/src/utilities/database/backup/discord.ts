@@ -16,12 +16,9 @@ export default class DiscordMessage implements BackupProvider {
       const file = statSync(path);
       const fileSizeInMib = file.size / 1000000.0;
 
-      if (!file.isFile())
-        return reject(Error("path does not resolve in a file"));
-      if (fileSizeInMib > 25)
-        return reject(Error("file size is larger than allowed (>25Mib)"));
-      if (!this.webhookClient)
-        return reject(Error("no webhook client has been initiated."));
+      if (!file.isFile()) return reject(Error("path does not resolve in a file"));
+      if (fileSizeInMib > 25) return reject(Error("file size is larger than allowed (>25Mib)"));
+      if (!this.webhookClient) return reject(Error("no webhook client has been initiated."));
 
       this.webhookClient.send({ files: [path], username: "Backup Provider" });
       resolve(null);

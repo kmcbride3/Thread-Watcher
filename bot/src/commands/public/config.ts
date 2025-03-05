@@ -85,16 +85,14 @@ const info: Command = {
                 .addChannelTypes(
                   ChannelType.GuildText,
                   ChannelType.PublicThread,
-                  ChannelType.PrivateThread,
+                  ChannelType.PrivateThread
                 )
-                .setRequired(true),
-            ),
+                .setRequired(true)
+            )
         )
         .addSubcommand((c) =>
-          c
-            .setName("reset")
-            .setDescription("will reset the value to the default"),
-        ),
+          c.setName("reset").setDescription("will reset the value to the default")
+        )
     )
     .addSubcommandGroup((g) =>
       g
@@ -117,15 +115,13 @@ const info: Command = {
                   {
                     name: "un-archive only",
                     value: "UNARCHIVE_ONLY",
-                  },
-                ),
-            ),
+                  }
+                )
+            )
         )
         .addSubcommand((c) =>
-          c
-            .setName("reset")
-            .setDescription("will reset the value to the default"),
-        ),
+          c.setName("reset").setDescription("will reset the value to the default")
+        )
     ),
 };
 

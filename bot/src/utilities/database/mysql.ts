@@ -63,25 +63,21 @@ class mysql implements Database {
                     throw new Error("[MYSQL] could not create table config");
                   }
                   resolve();
-                },
+                }
               );
-            },
+            }
           );
-        },
+        }
       );
     });
   }
 
   setConfigValue(guildID: string, key: string, value: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.connection.query(
-        "INSERT INTO config VALUES(?,?,?)",
-        [guildID, key, value],
-        (err) => {
-          if (err) return reject(err);
-          resolve();
-        },
-      );
+      this.connection.query("INSERT INTO config VALUES(?,?,?)", [guildID, key, value], (err) => {
+        if (err) return reject(err);
+        resolve();
+      });
     });
   }
 
@@ -93,7 +89,7 @@ class mysql implements Database {
         (err) => {
           if (err) return reject(err);
           resolve();
-        },
+        }
       );
     });
   }
@@ -106,7 +102,7 @@ class mysql implements Database {
           if (err) return reject(err);
           if (res?.[0]) return resolve(res[0]["value"]);
           return reject("NO ROW FOUND");
-        },
+        }
       );
     });
   }
@@ -120,7 +116,7 @@ class mysql implements Database {
         (err) => {
           if (err) return reject(err);
           resolve();
-        },
+        }
       );
     });
   }
@@ -133,7 +129,7 @@ class mysql implements Database {
         (err) => {
           if (err) return reject(err);
           resolve();
-        },
+        }
       );
     });
   }
@@ -146,7 +142,7 @@ class mysql implements Database {
         (err) => {
           if (err) return reject(err);
           resolve();
-        },
+        }
       );
     });
   }
@@ -189,7 +185,7 @@ class mysql implements Database {
             });
 
           return resolve(returnArr);
-        },
+        }
       );
     });
   }
@@ -202,50 +198,34 @@ class mysql implements Database {
         (err, res) => {
           if (err) reject(err);
           return resolve(res);
-        },
+        }
       );
     });
   }
 
   deleteThread(threadID: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.connection.query(
-        "DELETE FROM threads WHERE id = ?",
-        [threadID],
-        (err, res) => {
-          if (err) reject(err);
-          return resolve(res);
-        },
-      );
+      this.connection.query("DELETE FROM threads WHERE id = ?", [threadID], (err, res) => {
+        if (err) reject(err);
+        return resolve(res);
+      });
     });
   }
 
   deleteChannel(channelID: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.connection.query(
-        "DELETE FROM channels WHERE id = ?",
-        [channelID],
-        (err, res) => {
-          if (err) reject(err);
-          return resolve(res);
-        },
-      );
+      this.connection.query("DELETE FROM channels WHERE id = ?", [channelID], (err, res) => {
+        if (err) reject(err);
+        return resolve(res);
+      });
     });
   }
 
   deleteGuild(server: string): Promise<void> {
     return new Promise((resolve, reject) => {
       const promises = [];
-      promises.push(
-        this.connection.query("DELETE FROM channels WHERE server = ?", [
-          server,
-        ]),
-      );
-      promises.push(
-        this.connection.query("DELETE FROM threads WHERE server = ?", [
-          server,
-        ]),
-      );
+      promises.push(this.connection.query("DELETE FROM channels WHERE server = ?", [server]));
+      promises.push(this.connection.query("DELETE FROM threads WHERE server = ?", [server]));
       Promise.all(promises)
         .then(() => resolve())
         .catch(reject);
@@ -260,7 +240,7 @@ class mysql implements Database {
         (err, res) => {
           if (err) reject(err);
           return resolve(res);
-        },
+        }
       );
     });
   }
@@ -317,17 +297,17 @@ class mysql implements Database {
         "SELECT id, server, dueArchive, watching FROM threads WHERE watching = 1",
         (err: Error | null, results: ThreadRow[]) => {
           if (err) {
-        this.logger.error(`Error fetching watched threads: ${err}`);
-        return reject(err);
+            this.logger.error(`Error fetching watched threads: ${err}`);
+            return reject(err);
           }
-          
+
           const threads: ThreadData[] = results.map((row: ThreadRow) => ({
-        id: row.id,
-        server: row.server,
-        dueArchive: row.dueArchive,
-        watching: Boolean(row.watching)
+            id: row.id,
+            server: row.server,
+            dueArchive: row.dueArchive,
+            watching: Boolean(row.watching),
           }));
-          
+
           resolve(threads);
         }
       );
@@ -336,7 +316,7 @@ class mysql implements Database {
 
   close(): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.connection.end(err => {
+      this.connection.end((err) => {
         if (err) reject(err);
         else resolve();
       });

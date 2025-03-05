@@ -8,10 +8,7 @@ import { Log76 } from "../logger";
 
 export default function scheduleBackups(database: Database, logger: Log76) {
   if (!config.database.backupInterval) return;
-  const backupsDirPath = join(
-    config.database.options.dataLocation,
-    "./backups",
-  );
+  const backupsDirPath = join(config.database.options.dataLocation, "./backups");
 
   if (!existsSync(backupsDirPath)) {
     logger.debug("backup directory does not exist. Creating one");
@@ -31,7 +28,7 @@ export default function scheduleBackups(database: Database, logger: Log76) {
           if (config.database.backupProvider != "none") {
             const provider = getBackupProvider(
               BackupProviders[config.database.backupProvider],
-              config,
+              config
             );
 
             if (provider) {
@@ -45,16 +42,12 @@ export default function scheduleBackups(database: Database, logger: Log76) {
           webLog(
             "Backup Delivery Error",
             `Backup was created but could not be saved\n\`${err}\``,
-            "Red",
+            "Red"
           );
           console.error(err);
         }
 
-        webLog(
-          "Backup Created",
-          `Backup was created at ${backupName}${backupLocation}`,
-          "Green",
-        );
+        webLog("Backup Created", `Backup was created at ${backupName}${backupLocation}`, "Green");
       })
       .catch((err) => {
         logger.error("backup could not be created");

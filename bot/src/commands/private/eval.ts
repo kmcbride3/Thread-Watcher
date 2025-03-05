@@ -6,54 +6,56 @@ import { Command, statusType } from "../../interfaces/command";
 // result of our eval command input for sending
 // to the channel
 const clean = async (text: string) => {
-    // If our input is a promise, await it before continuing
-    if (text && text.constructor.name == "Promise")
-      text = await text;
-    
-    // If the response isn't a string, `util.inspect()`
-    // is used to 'stringify' the code in a safe way that
-    // won't error out on objects with circular references
-    // (like Collections, for example)
-      text = inspect(text, { depth: 1 });
-    
-    // Replace symbols with character code alternatives and send off the cleaned up result
-    return text.replace(/[`@]/g, m => `${m}\u200b`);
-}
+  // If our input is a promise, await it before continuing
+  if (text && text.constructor.name == "Promise") text = await text;
+
+  // If the response isn't a string, `util.inspect()`
+  // is used to 'stringify' the code in a safe way that
+  // won't error out on objects with circular references
+  // (like Collections, for example)
+  text = inspect(text, { depth: 1 });
+
+  // Replace symbols with character code alternatives and send off the cleaned up result
+  return text.replace(/[`@]/g, (m) => `${m}\u200b`);
+};
 
 const evalCommand: Command = {
-    run: async (interaction: ChatInputCommandInteraction, buildBaseEmbed) => {
+  run: async (interaction: ChatInputCommandInteraction, buildBaseEmbed) => {
+    const code = interaction.options.getString("code");
+    if (!code) return;
+    await interaction.deferReply({
+      flags: [MessageFlagsBitField.Flags.Ephemeral],
+    });
+    const started = Date.now();
 
-        const code = interaction.options.getString("code")
-        if(!code) return
-        await interaction.deferReply({ flags: [MessageFlagsBitField.Flags.Ephemeral] })
-        const started = Date.now()
+    try {
+      const res = await clean(eval(code));
+      buildBaseEmbed("Executed code", statusType.success, {
+        fields: [
+          { name: "Code", value: `\`\`\`js\n${code}\n\`\`\`` },
+          { name: "Result", value: `\`\`\`js\n${res}\n\`\`\`` },
+        ],
+        description: `Execution took ${Date.now() - started}ms`,
+      });
+    } catch (err) {
+      buildBaseEmbed("Executed code", statusType.error, {
+        fields: [
+          { name: "Code", value: `\`\`\`js\n${code}\n\`\`\`` },
+          { name: "Error", value: `\`\`\`js\n${err}\n\`\`\`` },
+        ],
+      });
+    }
+  },
+  gatekeeping: {
+    ownerOnly: true,
+    devServerOnly: true,
+  },
+  data: new SlashCommandBuilder()
+    .setName("eval")
+    .setDescription("run code")
+    .addStringOption((o) =>
+      o.setName("code").setDescription("the code you want to run").setRequired(true)
+    ),
+};
 
-        try {
-            const res = await clean(eval(code))
-            buildBaseEmbed("Executed code", statusType.success, { fields: [
-                { name:"Code", value: `\`\`\`js\n${code}\n\`\`\`` },
-                { name:"Result", value: `\`\`\`js\n${res}\n\`\`\`` }
-            ], description: `Execution took ${Date.now() - started}ms` })
-        } catch(err) {
-            buildBaseEmbed("Executed code", statusType.error, { fields: [
-                { name:"Code", value: `\`\`\`js\n${code}\n\`\`\`` },
-                { name:"Error", value: `\`\`\`js\n${err}\n\`\`\`` }
-            ] })
-        }
-    },
-    gatekeeping: {
-        ownerOnly: true,
-        devServerOnly: true
-    },
-    data: new SlashCommandBuilder()
-        .setName("eval")
-        .setDescription("run code")
-        .addStringOption((o) => 
-            o
-            .setName("code")
-            .setDescription("the code you want to run")
-            .setRequired(true)
-        )
-}
-
-export default evalCommand
+export default evalCommand;
