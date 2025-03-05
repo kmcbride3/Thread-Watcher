@@ -200,7 +200,7 @@ function handleComponentInteraction<T extends BaseInteraction & { customId: stri
 ): void {
   const component = queue.get(interaction.customId);
   if (component) {
-    component._middleware(interaction);
+    component.middleware(interaction);
   } else if (interaction.isRepliable()) {
     interaction.reply({
       content: `No handler found for interaction with id \`${interaction.customId}\`.`,

@@ -49,7 +49,7 @@ export default class TwButton implements TwGenericComponent<ButtonInteraction> {
     if (misc.url) this.button.setURL(misc.url);
   }
 
-  _middleware(interaction: ButtonInteraction) {
+  public middleware(interaction: ButtonInteraction): void {
     if (this.filter && this.callback && this.filter(interaction)) {
       this.callback(interaction);
     } else {
@@ -58,6 +58,10 @@ export default class TwButton implements TwGenericComponent<ButtonInteraction> {
         flags: [MessageFlagsBitField.Flags.Ephemeral],
       });
     }
+  }
+
+  public _middleware(interaction: ButtonInteraction): void {
+    return this.middleware(interaction);
   }
 
   close(setDisabled: boolean) {

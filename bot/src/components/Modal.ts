@@ -47,7 +47,7 @@ export default class TwModal implements TwGenericComponent<ModalSubmitInteractio
     this.modal.setComponents(actionRow);
   }
 
-  _middleware(interaction: ModalSubmitInteraction) {
+  public middleware(interaction: ModalSubmitInteraction): void {
     if (this.filter && this.callback && this.filter(interaction)) {
       this.callback(interaction);
     } else {
@@ -56,6 +56,10 @@ export default class TwModal implements TwGenericComponent<ModalSubmitInteractio
         flags: [MessageFlagsBitField.Flags.Ephemeral],
       });
     }
+  }
+
+  public _middleware(interaction: ModalSubmitInteraction): void {
+    return this.middleware(interaction);
   }
 
   close() {

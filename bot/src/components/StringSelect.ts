@@ -32,7 +32,7 @@ export default class TwStringSelect implements TwGenericComponent<AnySelectMenuI
     this.select = new StringSelectMenuBuilder().setCustomId(this.id);
   }
 
-  _middleware(interaction: AnySelectMenuInteraction) {
+  public middleware(interaction: AnySelectMenuInteraction): void {
     logger.info("middleware function called");
     if (this.filter && this.callback && this.filter(interaction)) {
       this.callback(interaction);
@@ -42,6 +42,10 @@ export default class TwStringSelect implements TwGenericComponent<AnySelectMenuI
         flags: [MessageFlagsBitField.Flags.Ephemeral],
       });
     }
+  }
+
+  public _middleware(interaction: AnySelectMenuInteraction): void {
+    return this.middleware(interaction);
   }
 
   close() {

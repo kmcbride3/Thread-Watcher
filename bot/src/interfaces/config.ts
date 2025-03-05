@@ -1,7 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export interface ConfigValue {
+  default: any;
   validate: (value: any) => boolean;
-  matchKeys: string[];
-  default?: any;
-  defaultOnInvalid?: boolean;
+  // Add any other properties needed
 }
