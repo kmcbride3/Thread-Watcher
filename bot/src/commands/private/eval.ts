@@ -1,8 +1,6 @@
-import { ChatInputCommandInteraction, SlashCommandBuilder } from "discord.js";
-import loadCommands from "../../utilities/loadCommands";
-import { commands } from "../../bot";
+import { ChatInputCommandInteraction, SlashCommandBuilder, MessageFlagsBitField } from "discord.js";
+import { inspect } from "util";
 import { Command, statusType } from "../../interfaces/command";
-import reloadCommands from "../../utilities/routines/reloadCommands";
 
 // This function cleans up and prepares the
 // result of our eval command input for sending
@@ -16,8 +14,7 @@ const clean = async (text: string) => {
     // is used to 'stringify' the code in a safe way that
     // won't error out on objects with circular references
     // (like Collections, for example)
-    if (typeof text !== "string")
-      text = require("util").inspect(text, { depth: 1 });
+      text = inspect(text, { depth: 1 });
     
     // Replace symbols with character code alternatives and send off the cleaned up result
     return text.replace(/[`@]/g, m => `${m}\u200b`);
@@ -28,7 +25,7 @@ const evalCommand: Command = {
 
         const code = interaction.options.getString("code")
         if(!code) return
-        await interaction.deferReply({ ephemeral: true })
+        await interaction.deferReply({ flags: [MessageFlagsBitField.Flags.Ephemeral] })
         const started = Date.now()
 
         try {

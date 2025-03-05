@@ -1,199 +1,320 @@
-import { Client, GatewayIntentBits, RateLimitData, Options, ShardingManager } from "discord.js";
-import Log75 from "log75";
+import { Client, GatewayIntentBits, Partials, Options, ShardingManager, Collection, Events } from "discord.js";
+import { Command } from "./interfaces/command";
+import { getRestClient } from "./utilities/discordRest";
 import loadEvents from "./utilities/loadEvents";
 import loadCommands from "./utilities/loadCommands";
-// Remove redundant imports
-// import { registerCommands, checkCommandChange, genCommandHash } from "./utilities/registerCommands";
-
-import { DataBases, getDatabase } from "./utilities/database/DatabaseManager";
-import { ThreadData } from "./interfaces/database";
-import { red, green, yellow, blue } from "ansi-colors";
-import cnf from "./utilities/cnf/index";
+import { getDatabase } from "./utilities/database/DatabaseManager";
 import UserSettings from "./utilities/userSettings";
-import { handleRateLimit } from "./utilities/apiErrorHandler";
-import { logToFile } from "./utilities/fileLogger";
+import { ConfigFile } from "./utilities/cnf/index";
+import { Log76 } from "./utilities/logger";
+import { LogLevel } from "log75";
+import { threadManager } from "./utilities/threadManager";
+import { WatchedThread } from "./interfaces/thread";
 
-const config = cnf();
-
-const db = getDatabase(DataBases[config.database.type as keyof typeof DataBases], config);
-db.createTables();
-
+// Create and export the client with optimized intents
 const client = new Client({
+  // Only request intents we actually need
   intents: [
-    GatewayIntentBits.Guilds
+    GatewayIntentBits.Guilds,         // For basic guild data and thread events
+    GatewayIntentBits.GuildMessages   // For monitoring new messages in threads
   ],
+  // Include partials we need to handle
+  partials: [
+    Partials.Channel,                 // For handling thread channels properly
+    Partials.Message                  // For handling messages in threads
+  ],
+  // Optimize cache management
   makeCache: Options.cacheWithLimits({
-    // Disable caching for other managers
-    MessageManager: 0,
-    PresenceManager: 0,
-    UserManager: 0,
-    GuildMemberManager: 0,
+    // Focused caching for thread management
+    MessageManager: 10,                // Only cache minimal messages
+    PresenceManager: 0,                // Don't cache presence at all
+    UserManager: {
+      maxSize: 100,                    // Minimal user caching
+      keepOverLimit: (user): boolean => user.id === client.user?.id // Always keep the bot user
+    },
+    GuildMemberManager: 0,             // Don't cache members by default
+    ThreadManager: {
+      maxSize: 500                     // Cache more threads since that's our focus
+    }
   }),
+  // Add sweep filters separately
+  sweepers: {
+    threads: {
+      filter: () => {
+        return (thread) => {
+          const watched = threadManager.getWatchedThreads().has(thread.id);
+          return !watched; // Only sweep if not watched
+        };
+      },
+      interval: 3600 // Sweep every hour
+    }
+  },
+  // This parameter is valid
+  failIfNotExists: false,
+  // REST options configuration
+  rest: {
+    version: '10',
+    retries: 3,
+    timeout: 15000
+  }
 });
 
-class log76 extends Log75 {
-  static LogLevel = {
-    Quiet: 0,
-    Error: 1,
-    Warn: 2,
-    Standard: 3,
-    Debug: 4,
-    Trace: 5
-  };
+// For backward compatibility - will be migrated to threadManager
+const threads = new Collection<string, WatchedThread>();
 
-  constructor(level: number, options: { color: boolean }) {
-    super(level, options);
-  }
+// Exportable globals for sharing state.
+let settings: UserSettings;
+let commands = new Collection<string, Command>();
+let restClient: ReturnType<typeof getRestClient>;
 
-  // Override print so that the shard id is only added if present and no "UNKNOWN" is shown.
-  print(msg: string, type: string, color: (msg: string) => string, output: (msg: string) => void): string {
-    // Use shard id if available, else empty string.
-    const shardLabel = client.shard?.ids.length ? `Shard ${client.shard.ids.join(", ")}: ` : "";
-    const formattedMsg = `[${color(`${type}`)}] ${shardLabel}${msg}`;
-    output(formattedMsg);
-    return formattedMsg;
-  }
+// Ensure initBot is only called once.
+let botInitialized = false;
 
-  async error(s: string) {
-    if (logLevel >= log76.LogLevel.Error) {
-      this.print(s, "ERROR", red, originalConsoleError);
-      if (config.logToFile) await logToFile(`[ERROR] ${s}`);
-    }
-  }
-
-  async done(s: string) {
-    if (logLevel >= log76.LogLevel.Standard) {
-      this.print(s, "OK", green, originalConsoleLog);
-      if (config.logToFile) await logToFile(`[OK] ${s}`);
-    }
-  }
-
-  async warn(s: string) {
-    if (logLevel >= log76.LogLevel.Warn) {
-      this.print(s, "WARN", yellow, originalConsoleWarn);
-      if (config.logToFile) await logToFile(`[WARN] ${s}`);
-    }
+// All initialization logic is contained within initBot.
+export async function initBot(
+  manager: ShardingManager | null, // allow null
+  logger: Log76,
+  config: ConfigFile,
+  database: ReturnType<typeof getDatabase>
+): Promise<void> {
+  logger.trace(`initBot called in process ${process.pid}`);
+  
+  if (botInitialized) {
+    logger.trace(`botInitialized is true, returning from initBot.`);
+    return;
   }
   
-  async info(s: string) {
-    if (logLevel >= log76.LogLevel.Standard) {
-      this.print(s, "INFO", blue, originalConsoleInfo);
-      if (config.logToFile) await logToFile(`[INFO] ${s}`);
-    }
+  if (logger.logLevel === LogLevel.Trace) {
+    logger.trace(`botInitialized is false, proceeding with initBot. Process ${process.pid}`);
+  } else {
+    logger.debug(`botInitialized is false, proceeding with initBot. Process ${process.pid}`);
   }
-
-  async debug(s: string) {
-    if (logLevel >= log76.LogLevel.Debug) {
-      this.print(s, "DEBUG", blue, originalConsoleLog);
-      if (config.logToFile) await logToFile(`[DEBUG] ${s}`);
-    }
-  }
-
-  async trace(s: string) {
-    this.print(s, "TRACE", blue, originalConsoleTrace);
-  }
-}
-
-// Set log level from config
-const logLevel = log76.LogLevel[config.logLevel.toUpperCase() as keyof typeof log76.LogLevel] || log76.LogLevel.Standard;
-const logger = new log76(logLevel, { color: true });
-
-const originalConsoleError = console.error.bind(console)
-const originalConsoleLog = console.log.bind(console)
-const originalConsoleWarn = console.warn.bind(console)
-const originalConsoleInfo = console.info.bind(console)
-const originalConsoleTrace = console.trace.bind(console)
-
-// Update console overrides to use a consistent format, omitting the "CONSOLE" prefix.
-console.error = (...args) => {
-  logger.error(args.join(" "));
-};
-console.log = (...args) => {
-  logger.info(args.join(" "));
-};
-console.warn = (...args) => {
-  logger.warn(args.join(" "));
-};
-console.info = (...args) => {
-  logger.info(args.join(" "));
-};
-console.trace = (...args) => {
-  logger.trace(args.join(" "));
-};
-
-const commands = loadCommands();
-
-client.on('rateLimit', (info: RateLimitData) => {
-  logger.warn(`Rate limit hit: ${JSON.stringify(info)}`);
-  handleRateLimit(info.retryAfter, info.global).then(() => {
-    logger.info(`Resuming operations after delay of ${info.retryAfter}ms`);
-  });
-});
-
-client.on('error', (error: Error) => {
-  logger.error(`Client error: ${error.message}`);
-});
-
-const threads = new Map<string, ThreadData>();
-const settings = new UserSettings(db);
-
-client.once('ready', async () => {
-  if (client.shard) {
-    logger.done("Bot connected successfully to the designated server(s).");
-  }
-});
-
-client.login(config.tokens.discord).catch(async (err: Error) => {
-  logger.error(`Could not authorise bot. ${err.toString()}`);
-  await handleShutdown("login failure");
-});
-
-// Load events using ShardingManager from index.ts
-export function initBot(deps: { manager: ShardingManager }): void {
-  loadEvents(client, { manager: deps.manager });
-}
-
-export { client, logger, commands, db, threads, config, settings, handleShutdown };
-
-let shuttingDown = false;
-
-const handleShutdown = async (reason: string) => {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  logger.debug(`Shutdown initiated due to: ${reason}`);
-  const shutdownTimeout = setTimeout(() => {
-    logger.error("Shutdown process taking too long, forcing exit...");
-    process.exit(1);
-  }, 10000); // 10 seconds timeout
+  botInitialized = true;
 
   try {
-    // Perform shard-level clean-up here
-    await client.destroy();
-    clearTimeout(shutdownTimeout);
-    logger.done("Shard shut down successfully.");
-    process.exit(0);
-  } catch (err) {
-    logger.error(`Error during shutdown: ${err}`);
-    clearTimeout(shutdownTimeout);
+    // Initialize REST client first for proper API interactions
+    restClient = getRestClient();
+    logger.trace("REST client initialized");
+    
+    // Make the REST client available to threadManager
+    threadManager.setRestClient(restClient);
+    
+    // Initialize database and settings.
+    const db = database;
+    if (!db) {
+      if (LogLevel[logger.logLevel] === 'Trace') {
+        logger.trace("initBot error: Database not provided");
+      } else {
+        logger.error("[SHARD] Database not provided");
+      }
+      throw new Error("Database not initialized");
+    }
+    
+    logger.debug("[SHARD] Creating tables in database");
+    db.createTables();
+    settings = new UserSettings(db);
+    
+    // Load commands and events
+    logger.debug("[SHARD] About to load events.");
+    
+    await loadEvents(client, logger);
+    
+    logger.debug("[SHARD] About to load commands.");
+    try {
+      commands = await loadCommands();
+      logger.done("[SHARD] Commands loaded successfully");
+    } catch (error) {
+      if (LogLevel[logger.logLevel] === 'Trace') {
+        logger.trace(`Failed to load commands: ${error instanceof Error ? error.message : String(error)}`);
+      } else {
+        logger.trace(`Failed to load commands: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      process.exit(1);
+    }
+    
+    // Setup proper client event handlers
+    client.on(Events.Error, (error) => {
+      logger.error(`Client error: ${error}`);
+    });
+    
+    client.on(Events.Debug, (message) => {
+      logger.trace(`Client debug: ${message}`);
+    });
+    
+    client.on(Events.Warn, (message) => {
+      logger.warn(`Client warning: ${message}`);
+    });
+    
+    client.on(Events.ThreadCreate, (thread) => {
+      if (thread.guildId) {
+        logger.trace(`Thread created: ${thread.name} (${thread.id})`);
+      }
+    });
+    
+    client.on(Events.ThreadDelete, (thread) => {
+      threadManager.unwatchThread(thread.id);
+    });
+
+    client.on(Events.ShardReconnecting, () => {
+      logger.warn("[SHARD] Reconnecting to Discord Gateway");
+      threadManager.pauseThreadMonitoring();
+    });
+
+    client.on(Events.ShardResume, () => {
+      logger.done("[SHARD] Reconnected to Discord Gateway");
+      threadManager.startThreadMonitoring();
+    });
+
+    // Define handleShardShutdown to manage a graceful shutdown.
+    let shuttingDown = false;
+
+    async function handleShardShutdown(code: string): Promise<void> {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      
+      if (LogLevel[logger.logLevel] === 'Trace') {
+      logger.trace(`Shard shutdown started: ${code}`);
+      } else {
+      logger.info(`[SHARD] Shutdown initiated due to: ${code}`);
+      }
+    
+      
+      const shutdownTimeout: NodeJS.Timeout = setTimeout(() => {
+      logger.error("[SHARD] Shutdown process taking too long, forcing exit...");
+      process.exit(1);
+      }, 10000);
+      
+      try {
+      logger.debug("[SHARD] Destroying client...");
+      await client.destroy();
+      logger.debug("[SHARD] Client destroyed.");
+      
+      clearTimeout(shutdownTimeout);
+      logger.done("[SHARD] Shard shut down successfully.");
+      
+      if (typeof process.send === "function") {
+        logger.debug("[SHARD] Sending KILL_SHARD message to parent");
+        process.send({ op: 'KILL_SHARD' } as { op: string });
+      } else {
+        logger.debug("[SHARD] process.send not available in this context.");
+      }
+      
+      logger.trace("Shard process exit");
+      process.removeAllListeners();
+      process.exit(0);
+      } catch (err: unknown) {
+      logger.error(`Error during shutdown: ${err}`);
+      if (err instanceof Error && err.stack) logger.error(err.stack);
+      clearTimeout(shutdownTimeout);
+      process.removeAllListeners();
+      process.exit(1);
+      }
+    }
+
+    // Log before starting client.login.
+    logger.debug(`[SHARD] Entering client.login phase with token ${config.tokens.discord ? 'provided' : 'missing'}`);
+    if (!config.tokens.discord) {
+      if (logger.logLevel === LogLevel.Trace) { 
+        logger.trace("Discord token is missing or invalid");
+      } else {
+        logger.error("Discord token is missing or invalid");
+      }
+      process.exit(1);
+    }
+    
+    try {
+      if (LogLevel[logger.logLevel] === 'Trace') {
+        logger.trace("Attempting Discord login");
+        await client.login(config.tokens.discord);
+        logger.trace("Discord login successful");
+      } else {
+        logger.debug("Attempting to login to Discord");
+        await client.login(config.tokens.discord);
+        logger.debug("Bot logged in successfully.");
+      }
+
+      // Initialize thread monitoring after successful login
+      threadManager.startThreadMonitoring();
+    } catch (err) {
+      let errorMsg = "Unknown error";
+      
+      try {
+        errorMsg = err instanceof Error ? err.message : String(err);
+        if (typeof err === 'object' && err !== null) {
+          errorMsg = JSON.stringify(err);
+        }
+      } catch { /* fallback to basic error message */ }
+      
+      if (LogLevel[logger.logLevel] === 'Trace') {
+        logger.trace(`Discord login failed: ${errorMsg}`); 
+      } else {
+        logger.error(`client.login failed with error: ${errorMsg}`);
+      }
+      
+      if (errorMsg.includes("Not enough sessions remaining")) {
+        logger.warn(`Could not authorise bot. ${errorMsg}`);
+        try {
+          const match = /resets at ([\d-]+T[\d:.]+Z)/.exec(errorMsg);
+          if (match) {
+            const resetTime = new Date(match[1]).getTime();
+            const now = Date.now();
+            const waitMs = resetTime > now ? resetTime - now : 0;
+            
+            // Wait for session limit to reset
+            logger.info(`Waiting ${waitMs}ms for session limit to reset`);
+            await new Promise(resolve => setTimeout(resolve, waitMs));
+            
+            logger.info("Retrying login after waiting for session reset...");
+            await client.login(config.tokens.discord);
+            logger.done("Login successful after session reset wait.");
+          } else {
+            logger.error("Could not parse session reset time from error.");
+            await handleShardShutdown("login failure");
+          }
+        } catch (retryError) {
+          logger.error(`Error retrying login: ${retryError}`);
+          await handleShardShutdown("login failure");
+        }
+      } else {
+        await handleShardShutdown("login failure");
+      }
+    }
+
+    // Safe process message handling
+    if (typeof process.on === 'function') {
+      process.on("message", async (message) => {
+        logger.debug(`[SHARD] Received process message: ${typeof message === 'object' ? JSON.stringify(message) : message}`);
+        
+        if (message === 'shutdown') {
+          if (LogLevel[logger.logLevel] === 'Trace') {
+            logger.trace("Shard received shutdown message");
+          } else {
+            logger.debug("[SHARD] Received shutdown message, shutting down shard.");
+          }
+          await handleShardShutdown("received shutdown message");
+        }
+      });
+
+      process.on("uncaughtException", async (err) => {
+        logger.error(`[FATAL ERROR] shard ${client.shard?.ids} encountered a fatal error. (dump below)`);
+        logger.error(err instanceof Error ? err.message : String(err));
+        if (err instanceof Error && err.stack) logger.error(err.stack);
+        if (LogLevel[logger.logLevel] === 'Trace') {
+          logger.trace(`Shard uncaught exception: ${err instanceof Error ? err.message : String(err)}`);
+        } else {
+          logger.debug("[SHARD] Calling handleShardShutdown due to uncaught exception");
+        }
+
+        await handleShardShutdown("uncaught exception");
+      });
+    }
+  } catch (initError) {
+    logger.trace(`Bot initialization failed: ${initError instanceof Error ? initError.message : String(initError)}`);
+    logger.error(`Bot initialization failed: ${initError instanceof Error ? initError.message : String(initError)}`);
+    if (initError instanceof Error && initError.stack) logger.error(initError.stack);
     process.exit(1);
   }
-};
+}
 
-process.on("message", async (message) => {
-  if (message === 'shutdown') {
-    await handleShutdown("received shutdown message");
-  }
-});
-
-process.on("uncaughtException", async (err) => {
-  if (shuttingDown) {
-    // Suppress logging errors during shutdown
-    process.exit(0);
-  } else {
-    logger.error(
-      `[FATAL ERROR] shard ${client.shard?.ids[0]} encountered a fatal error. (dump below)`
-    );
-    logger.error(err.toString());
-    await handleShutdown("uncaught exception");
-  }
-});
+// Export client and all shared variables.
+export { commands, client, restClient as rest, settings, threads, threadManager };

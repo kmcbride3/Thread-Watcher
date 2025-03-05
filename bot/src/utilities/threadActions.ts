@@ -1,9 +1,11 @@
 import { ThreadChannel } from "discord.js";
-import { db, threads } from "../bot";
+import { threadManager } from "./threadManager";
 import { handleApiError } from "./apiErrorHandler";
+import { db, logger } from "../index";
+import { rateLimitManager } from './rateLimitManager';
 
 /**
- *
+ * Calculate due archive timestamp from minutes
  * @param dueArchive the amount of time a thread has to be inactive for discord to hide it, in minutes
  * @param fromDate from what timestamp to calculate when thread will be hidden
  * @returns {Number} the calculated timestamp where a thread will be hidden
@@ -17,102 +19,128 @@ export function dueArchiveTimestamp(
   // and the bot did not manage to get the last message it would take a few days (or a week at most) until the bot
   // actually did its job
   let date = fromDate || new Date();
-  if (fromDate && !(fromDate instanceof Date)) {
+  if (fromDate !== undefined && !(fromDate instanceof Date)) {
     date = new Date(0);
   }
 
   return date.getTime() / 1000 + dueArchive * 60;
 }
 
-export function setArchive(thread: ThreadChannel, dueArchive = 10_080): Promise<void> {
+/**
+ * Unarchive thread and set its auto-archive duration with rate limit and retry handling
+ */
+export function setArchive(thread: ThreadChannel, dueArchive = 10_080) {
   return new Promise((resolve, reject) => {
-    if (thread.locked) return resolve();
+    const performSetArchive = async () => {
+      if (thread.locked) return null;
 
-    thread
-      .setArchived(false)
-      .then(() => {
+      try {
+        await thread.setArchived(false)
+        
         let DArchive = thread.autoArchiveDuration;
         if (thread.manageable) {
-          thread.setAutoArchiveDuration(dueArchive).catch((err) => {
-            handleApiError(err, () => setArchive(thread, dueArchive))
-              .then(resolve)
-              .catch(reject);
-          });
-          DArchive = dueArchive;
+          try {
+            await thread.setAutoArchiveDuration(dueArchive);
+            DArchive = dueArchive;
+          } catch (durationErr) {
+            logger.warn(`Failed to set auto-archive duration for thread ${thread.id}: ${durationErr}`)
+          }
         }
-        db.updateDueArchive(thread.id, dueArchiveTimestamp(DArchive || 0))
-          .then(resolve)
-          .catch(reject);
-      })
+        await db.updateDueArchive(thread.id, dueArchiveTimestamp(DArchive || 0));
+        return null;
+      }
+      catch (err) {
+        if (err && typeof err === 'object' && 'headers' in err) {
+          rateLimitManager.updateFromHeaders(`/channels/${thread.id}`, (err.headers as Record<string, string>));
+        }
+        throw err;
+      }
+    };
+
+    // Use handleApiError for retries, with max 3 retries and 1000ms initial delay
+    handleApiError(null, performSetArchive, 3, 1000)
+      .then(resolve)
       .catch(reject);
   });
 }
 
-export function bumpAutoTime(thread: ThreadChannel): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const t = threads.get(thread.id);
-    if (!t) return reject(`Thread ${thread.id} not in thread list`);
+/**
+ * Update thread's due archive time in memory and database
+ */
+export async function bumpAutoTime(thread: ThreadChannel): Promise<void> {
+  try {
     const newTimeStamp = dueArchiveTimestamp(
       thread.autoArchiveDuration || 0,
       thread.lastMessage?.createdAt,
-    ) as number;
-    t.dueArchive = newTimeStamp;
-
-    db.updateDueArchive(thread.id, newTimeStamp).then(resolve).catch(reject);
-  });
+    );
+    
+    // Use db directly without importing getDatabase
+    await db.updateDueArchive(thread.id, newTimeStamp);
+    const watchedThreads = threadManager.getWatchedThreads();
+    
+    if (watchedThreads.has(thread.id)) {
+      const threadData = watchedThreads.get(thread.id)!;
+      threadData.dueArchive = newTimeStamp;
+    }
+  } catch (error) {
+    throw new Error(`Failed to bump auto time: ${error}`);
+  }
 }
 
-export function bumpUnknown(id: string): void {
-  db.updateDueArchive(id, dueArchiveTimestamp(10_080));
+/**
+ * For unknown threads, just set a far-future timestamp
+ */
+export async function bumpUnknown(id: string): Promise<void> {
+  // Use db directly
+  await db.updateDueArchive(id, dueArchiveTimestamp(10_080));
 }
 
-export function addThread(
+/**
+ * Add a thread to watch - delegates to threadManager
+ */
+export async function addThread(
   id: string,
   dueArchive: number,
-  guildID: string,
+  server: string,
 ): Promise<void> {
-  return new Promise((resolve, reject) => {
-    db.insertThread(id, dueArchive, guildID)
-      .then(() => {
-        threads.set(id, {
-          id,
-          server: guildID,
-          dueArchive: dueArchive,
-          watching: true,
-        });
-        resolve();
-      })
-      .catch((err) => {
-        handleApiError(err, () => addThread(id, dueArchive, guildID))
-          .then(resolve)
-          .catch(reject);
-      });
-  });
+  try {
+    await threadManager.addThreadToWatch(id, dueArchive, server);
+  } catch (err) {
+    return handleApiError(err, () => addThread(id, dueArchive, server), 3, 1000);
+  }
 }
 
-export function removeThread(id: string, force = false): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const remove = force
-      ? db.deleteThread(id)
-      : db.unwatchThread(id).then(() => {
-          threads.delete(id);
-        });
-
-    remove
-      .then(resolve)
-      .catch((err) => {
-        handleApiError(err, () => removeThread(id, force))
-          .then(resolve)
-          .catch(reject);
-      });
-  });
+/**
+ * Remove thread from watch - delegates to threadManager
+ */
+export async function removeThread(id: string, force = false): Promise<void> {
+  try {
+    await threadManager.removeThreadFromWatch(id, force);
+  } catch (err) {
+    return handleApiError(err, () => removeThread(id, force), 2, 1000);
+  }
 }
 
-export function clearGuild(id: string): Promise<void> {
-  threads.forEach((t) => {
-    if (t.server == id) threads.delete(t.id);
-  });
-  return db.deleteGuild(id).catch((err) => {
-    handleApiError(err, () => clearGuild(id));
-  });
+/**
+ * Clear all threads for a guild from memory and database
+ */
+export async function clearGuild(
+  server: string,
+): Promise<void> {
+  try {
+    // Get watched threads and filter by server
+    const watchedThreads = threadManager.getWatchedThreads();
+    const guildThreads = watchedThreads.filter(thread => thread.server === server);
+    
+    // Remove each thread
+    for (const [threadId] of guildThreads) {
+      await threadManager.removeThreadFromWatch(threadId, true);
+    }
+    
+    // Use db directly without importing
+    await db.deleteGuild(server);
+  } catch (err) {
+    // Add proper typing for the error and provide max retries
+    return handleApiError(err, () => clearGuild(server), 2, 1000);
+  }
 }

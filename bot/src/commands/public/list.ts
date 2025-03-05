@@ -17,9 +17,10 @@ import {
   ButtonBuilder,
   Interaction,
   ButtonInteraction,
+  MessageFlagsBitField
 } from "discord.js";
 import { Command } from "../../interfaces/command";
-import { db, config } from "../../bot";
+import { config, db } from "../../index";
 import Chunkable from "../../utilities/Chunkable";
 import TwButton from "../../components/Button";
 
@@ -175,7 +176,7 @@ const threads: Command = {
     )
       pub = false;
 
-    await interaction.deferReply({ ephemeral: !(pub || false) });
+    await interaction.deferReply({ flags: pub ? [] : [MessageFlagsBitField.Flags.Ephemeral] });
 
     const res =
       show == "channel"
@@ -224,16 +225,15 @@ const threads: Command = {
         display(i);
       });
 
+      const options = {
+        embeds: [embed],
+        components: [navCompontents],
+      };
+
       if (btnInteraction) {
-        btnInteraction.update({
-          embeds: [embed],
-          components: [navCompontents],
-        });
+        btnInteraction.update(options);
       } else {
-        interaction.editReply({
-          embeds: [embed],
-          components: [navCompontents],
-        });
+        interaction.editReply(options);
       }
     }
 

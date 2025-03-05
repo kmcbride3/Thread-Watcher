@@ -1,11 +1,19 @@
-import { ActionRowBuilder, ModalActionRowComponentBuilder, ModalBuilder, TextInputBuilder } from "@discordjs/builders"
-import { ModalSubmitInteraction, TextInputStyle } from "discord.js"
+import { 
+  ActionRowBuilder, 
+  ModalActionRowComponentBuilder, 
+  ModalBuilder, 
+  TextInputBuilder,
+  ModalSubmitInteraction, 
+  TextInputStyle,
+  Collection,
+  MessageFlagsBitField
+} from "discord.js"
 import TwGenericComponent from "../interfaces/genericComponent"
 
 type modalSubmit = ( interaction: ModalSubmitInteraction ) => void
 export type modalFilter = ( interaction: ModalSubmitInteraction ) => boolean
 
-const ModalInteractionQueue: Map<string, TwModal> = new Map<string, TwModal>()
+const ModalInteractionQueue: Collection<string, TwModal> = new Collection<string, TwModal>()
 
 export { ModalInteractionQueue }
 
@@ -49,7 +57,10 @@ export default class TwModal implements TwGenericComponent<ModalSubmitInteractio
         if(this.filter && this.callback && this.filter(interaction)) {
             this.callback(interaction)
         } else {
-            interaction.reply({ ephemeral: true, content: "Nuh uh <:statusurgent:960959148848214017>" })
+            interaction.reply({
+                content: "Nuh uh <:statusurgent:960959148848214017>",
+                flags: [MessageFlagsBitField.Flags.Ephemeral]
+            })
         }
     }
 

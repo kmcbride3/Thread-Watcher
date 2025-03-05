@@ -1,5 +1,5 @@
 import { ChatInputCommandInteraction, SlashCommandBuilder } from "discord.js";
-import { db } from "../../bot";
+import { database as db } from "../../index";
 import { Command, statusType } from "../../interfaces/command";
 import { ChannelData, ThreadData } from "src/interfaces/database";
 

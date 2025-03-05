@@ -14,14 +14,17 @@ import {
   Role,
   GuildForumTag,
   ActionRowBuilder,
-  SelectMenuBuilder,
+  StringSelectMenuBuilder,
   ButtonStyle,
   ButtonInteraction,
   StringSelectMenuOptionBuilder,
   AnySelectMenuInteraction,
+  ButtonBuilder,
+  MessageFlagsBitField
 } from "discord.js";
 import { Command, statusType } from "../../interfaces/command";
-import { db, threads as threadsList } from "../../bot";
+import { database as db } from "../../index";
+import { threads as threadsList } from "../../bot";
 import { threadShouldBeWatched } from "../../events/threadCreate";
 import { strToRegex, validRegex } from "../../utilities/regex";
 import {
@@ -100,10 +103,11 @@ const handleThreadActioning = async (
       await threadShouldBeWatched(
         {
           id: thread.id,
-          server: thread.guildId,
+          guild: thread.guildId,
           regex: filters.regex ?? "",
-          roles: filters.roles.map((r) => r?.id),
-          tags: filters.tags.map((t) => t?.id),
+          roles: filters.roles.map((r) => r?.id).filter((id): id is string => id !== undefined),
+          tags: filters.tags.map((t) => t?.id).filter((id): id is string => id !== undefined),
+          type: 0,
         },
         thread,
       )
@@ -163,8 +167,7 @@ const getDirThreads = async (
 ): Promise<ThreadChannel[]> => {
   const threads: ThreadChannel[] = [];
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  for (const [_idx, channel] of dir.children.cache) {
+  for (const [, channel] of dir.children.cache) {
     if (!channel) continue;
     if (
       !(
@@ -185,7 +188,7 @@ const getDirThreads = async (
 
 const batch: Command = {
   run: async (interaction: ChatInputCommandInteraction, buildBaseEmbed) => {
-    await interaction.deferReply();
+    await interaction.deferReply({ flags: [MessageFlagsBitField.Flags.Ephemeral] });
     const parent =
       interaction.options.getChannel("parent") || interaction.channel;
     const advanced = interaction.options.getBoolean("advanced");
@@ -251,26 +254,27 @@ const batch: Command = {
         parent instanceof CategoryChannel
       )
     ) {
-      buildBaseEmbed("Wrong Channel Type", statusType.error, {
+      const embed = buildBaseEmbed("Wrong Channel Type", statusType.error, {
         description: `<#${parent?.id}> is not a valid channel for this command`,
-        ephermal: true,
       });
+      interaction.reply({ embeds: [embed], flags: [MessageFlagsBitField.Flags.Ephemeral] });
       return;
     }
 
     if (!parent.viewable) {
-      buildBaseEmbed("Cannot view channel", statusType.error, {
+      const embed = buildBaseEmbed("Cannot view channel", statusType.error, {
         description: `Thread-Watcher cannot see <#${parent.id}>. Make sure the bot has the \`View Channel\` permission in the channel.`,
-        ephermal: true,
       });
+      interaction.reply({ embeds: [embed], flags: [MessageFlagsBitField.Flags.Ephemeral] });
       return;
     }
 
     if (!action || !interaction.guildId) {
-      buildBaseEmbed("Rare Easter Egg", statusType.warning, {
+      const embed = buildBaseEmbed("Rare Easter Egg", statusType.warning, {
         description:
           "Congrats! 🎉\nThis error should be impossible to get but you got it anyhow you silly little sausage.",
       });
+      interaction.reply({ embeds: [embed] });
       return;
     }
 
@@ -292,9 +296,7 @@ const batch: Command = {
       regex: "",
     };
 
-    // This is against the law but I do not care for i am the code bandit herherherhehrherherherhreuh
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const components: any[] = [];
+    const components: ActionRowBuilder<StringSelectMenuBuilder | ButtonBuilder>[] = [];
 
     if (advanced) {
       const filterEmbed = buildBaseEmbed("Filter Options", statusType.info, {
@@ -307,11 +309,11 @@ const batch: Command = {
                         `,
       });
 
-      const regexRowComponents = new ActionRowBuilder();
-      const rolesSelectComponents = new ActionRowBuilder<SelectMenuBuilder>();
-      const rolesRowNavigationComponents = new ActionRowBuilder();
-      const tagsSelectComponents = new ActionRowBuilder<SelectMenuBuilder>();
-      const confirmationButtonComponents = new ActionRowBuilder();
+      const regexRowComponents = new ActionRowBuilder<ButtonBuilder>();
+      const rolesSelectComponents = new ActionRowBuilder<StringSelectMenuBuilder>();
+      const rolesRowNavigationComponents = new ActionRowBuilder<ButtonBuilder>();
+      const tagsSelectComponents = new ActionRowBuilder<StringSelectMenuBuilder>();
+      const confirmationButtonComponents = new ActionRowBuilder<ButtonBuilder>();
 
       embeds.push(filterEmbed);
       components.push(
@@ -489,7 +491,7 @@ const batch: Command = {
             if (isRegexValid.valid) {
               filters.regex = ptrn;
               response.reply({
-                ephemeral: true,
+                flags: [MessageFlagsBitField.Flags.Ephemeral],
                 content: "saved",
               });
             } else {
@@ -501,7 +503,7 @@ const batch: Command = {
                 description: `the pattern you provided (\`${ptrn}\`) is not valid due to ${isRegexValid.reason}. Read the documentation on [**patterns**](https://example.com) for more info!`,
               });
               response.reply({
-                ephemeral: true,
+                flags: [MessageFlagsBitField.Flags.Ephemeral],
                 embeds: [embed],
               });
             }
@@ -522,7 +524,7 @@ const batch: Command = {
           updateEmbed(i);
         });
 
-        tryButton.onclick((i) => {
+        tryButton.onclick(() => {
           const testThreads = threads.slice(0, 10);
 
           const regex = strToRegex(filters.regex);
@@ -536,7 +538,7 @@ const batch: Command = {
             value: ` ${testThreads.map((e) => `**${e.name}**: ${regex.regex.test(e.name) != regex.inverted}`).join("\n")} `,
           });
 
-          i.reply({ embeds: [e], ephemeral: true });
+          interaction.reply({ embeds: [e], flags: [MessageFlagsBitField.Flags.Ephemeral] });
         });
 
         regexRowComponents.addComponents(
@@ -584,10 +586,11 @@ const batch: Command = {
 
             db.insertChannel({
               id: parent.id,
-              server: interaction.guildId ?? "",
+              guild: interaction.guildId ?? "",
               regex: filters.regex,
-              tags: filters.tags.map((t) => t?.id),
-              roles: filters.roles.map((r) => r?.id),
+              tags: filters.tags.map((t) => t?.id).filter((id): id is string => id !== undefined),
+              roles: filters.roles.map((r) => r?.id).filter((id): id is string => id !== undefined),
+              type: 0, // Adding the required type property
             });
           }
 
@@ -609,7 +612,7 @@ const batch: Command = {
 
       interaction.editReply({
         embeds: [filterEmbed],
-        components: [...components],
+        components: components,
       });
 
       // For debugging
@@ -624,13 +627,13 @@ const batch: Command = {
         // If filter alr exists for this channel we go ahead and delete it
         // this so the insertion we make later does not cause any oopsie poopsies
         if (alreadyExists) await db.deleteChannel(parent.id);
-
         db.insertChannel({
           id: parent.id,
-          server: interaction.guildId,
+          guild: interaction.guildId,
           regex: filters.regex,
-          tags: filters.tags.map((t) => t?.id),
-          roles: filters.roles.map((r) => r?.id),
+          tags: filters.tags.map((t) => t?.id).filter((id): id is string => id !== undefined),
+          roles: filters.roles.map((r) => r?.id).filter((id): id is string => id !== undefined),
+          type: 0, // Adding the required type property
         });
       }
       sendResultsEmbed(result);

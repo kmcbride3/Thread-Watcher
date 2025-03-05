@@ -3,13 +3,15 @@ import {
   ButtonInteraction,
   ButtonStyle,
   ComponentEmojiResolvable,
+  Collection,
+  MessageFlagsBitField
 } from "discord.js";
 import TwGenericComponent from "../interfaces/genericComponent";
 
 type buttonOnClick = (interaction: ButtonInteraction) => void;
 export type buttonFilter = (interaction: ButtonInteraction) => boolean;
 
-const ButtonInteractionQueue: Map<string, TwButton> = new Map<
+const ButtonInteractionQueue: Collection<string, TwButton> = new Collection<
   string,
   TwButton
 >();
@@ -59,8 +61,8 @@ export default class TwButton implements TwGenericComponent<ButtonInteraction> {
       this.callback(interaction);
     } else {
       interaction.reply({
-        ephemeral: true,
         content: "Nuh uh <:statusurgent:960959148848214017>",
+        flags: [MessageFlagsBitField.Flags.Ephemeral],
       });
     }
   }

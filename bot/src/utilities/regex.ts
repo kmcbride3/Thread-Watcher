@@ -3,7 +3,7 @@ const quantifier = "\\p{L}\\p{Emoji_Presentation}><\\(\\)!*\\-\\[\\]\\d"
 
 export function validRegex(r: string) {
     if (!r.trim().length) return { valid: false, reason: "regex string empty" }
-    if (!/^[\p{L}\p{Emoji_Presentation}><\(\)!*\-\[\]\d]{0,100}$/gmu.test(r)) return { valid: false, reason: "invalid regex format" }
+    if (!/^[\p{L}\p{Emoji_Presentation}><()!*\\-\\[\\\]d]{0,100}$/gmu.test(r)) return { valid: false, reason: "invalid regex format" }
 
     return { valid: true }
 }

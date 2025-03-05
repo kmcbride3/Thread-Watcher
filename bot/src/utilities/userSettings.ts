@@ -1,12 +1,13 @@
 import { Database } from "../interfaces/database";
+import { Collection } from "discord.js";
 
 export default class UserSettings {
   db: Database;
-  cache: Map<string, string>;
+  cache: Collection<string, string>;
 
   constructor(db: Database) {
     this.db = db;
-    this.cache = new Map();
+    this.cache = new Collection();
   }
 
   getSetting(guild: string, key: string) {

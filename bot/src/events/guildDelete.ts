@@ -1,10 +1,12 @@
-import { Guild } from "discord.js";
-import { logger } from "../bot";
+import { Events, Guild } from "discord.js";
+import { logger } from "../index";
 import { clearGuild } from "../utilities/threadActions";
 
-export default function() {
-    return function(guild: Guild) {
-        logger.info(`bot left server ${guild.id}. Clearing associated data`)
-        clearGuild(guild.id)
-    }
+export default {
+  name: Events.GuildDelete,
+  once: false,
+  execute(guild: Guild) {
+    logger.info(`Bot removed from guild: ${guild.name} (ID: ${guild.id})`);
+    clearGuild(guild.id)
+  }
 }

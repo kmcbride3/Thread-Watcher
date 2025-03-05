@@ -1,58 +1,106 @@
-import { logger } from "../bot";
+import { logger } from "../index";
 
+// Track counts of different error types
 const invalidRequestLog: Record<string, number> = {
-  "401": 0,
-  "403": 0,
-  "429": 0,
-  "404": 0,
+  "401": 0, // Unauthorized
+  "403": 0, // Forbidden
+  "429": 0, // Rate Limited
+  "404": 0, // Not Found
 };
 
-let invalidRequestLogString = JSON.stringify(invalidRequestLog);
-
-export const handleRateLimit = (retryAfter: number, isGlobal = false) => {
-  const delay = isGlobal ? retryAfter * 1000 : retryAfter;
-  return new Promise((resolve) => setTimeout(resolve, delay));
-};
-
-export const handleApiError = async <T>(
-  err: { code?: number; status?: number; headers?: Record<string, string>; retry_after?: number },
-  retryFunction: () => Promise<T>
-): Promise<T> => {
-  if (!err || (!err.code && !err.status)) {
-    console.error("Error: Status code is undefined.");
-    return Promise.reject(new Error("Error: Status code is undefined."));
-  }
-  const statusCode = err?.code ?? err?.status;
-  if (statusCode === 429) {
-    const retryAfter = err.headers?.['retry-after'] ?? err.retry_after ?? 10;
-    const isGlobal = err.headers && err.headers['x-ratelimit-global'] === 'true';
-    await handleRateLimit(retryAfter as number, isGlobal);
-    try {
-      return await retryFunction();
-    } catch (retryError) {
-      throw new Error(`Retry function failed: ${(retryError as Error).message}`);
+/**
+ * Extract HTTP status code from errors
+ */
+function getStatusCode(error: unknown): number | null {
+  // Handle Discord.js API errors
+  if (error && typeof error === 'object') {
+    // Check for common error formats
+    if ('status' in error && typeof error.status === 'number') {
+      return error.status;
     }
-  } else if (statusCode !== undefined && [401, 403, 404].includes(statusCode)) {
-    invalidRequestLog[statusCode]++;
-    invalidRequestLogString = JSON.stringify(invalidRequestLog);
-    logger.warn(`Invalid request detected: ${statusCode}. Count: ${invalidRequestLog[statusCode]}`);
-    if (statusCode === 401) {
-      // Stop further requests if token is invalid
-      throw new Error(`Error ${statusCode}: Invalid token provided. Stopping further requests.`);
-    } else if (statusCode === 403) {
-      // Handle permission errors
-      throw new Error(`Error ${statusCode}: Permission error. Check role or channel permissions.`);
-    } else if (statusCode === 404) {
-      // Handle not found errors
-      throw new Error(`Error ${statusCode}: Resource not found. Stopping further attempts.`);
+    if ('statusCode' in error && typeof error.statusCode === 'number') {
+      return error.statusCode;
+    }
+    if ('code' in error && typeof error.code === 'number') {
+      return error.code;
+    }
+  }
+  return null;
+}
+
+/**
+ * Handle API errors with retry logic and status code tracking
+ * @param error The error that occurred
+ * @param retryFn A function to retry the operation
+ * @param maxRetries Maximum number of retry attempts
+ * @param delay Delay between retries in ms
+ * @returns Promise that resolves with the retry result or rejects if all retries fail
+ */
+export async function handleApiError<T>(
+  error: unknown, 
+  retryFn: () => Promise<T>,
+  maxRetries = 1,
+  delay = 1000
+): Promise<T> {
+  // Check for specific status codes and track them
+  const statusCode = getStatusCode(error);
+  if (statusCode) {
+    const statusString = statusCode.toString();
+    if (statusString in invalidRequestLog) {
+      invalidRequestLog[statusString]++;
+      
+      // Log different messages based on status code
+      switch (statusCode) {
+        case 401:
+          logger.warn("API Error: Unauthorized. Check your bot token.");
+          break;
+        case 403:
+          logger.warn("API Error: Forbidden. The bot doesn't have the required permissions.");
+          break;
+        case 429:
+          logger.warn("API Error: Rate limited. Waiting before retry.");
+          // For rate limits, we might want to use a longer delay
+          delay = Math.max(delay, 5000);
+          break;
+        case 404:
+          logger.warn("API Error: Resource not found. It may have been deleted.");
+          break;
+        default:
+          logger.warn(`API Error (${statusCode}): ${error instanceof Error ? error.message : String(error)}`);
+      }
+    } else {
+      logger.warn(`API Error (${statusCode}): ${error instanceof Error ? error.message : String(error)}`);
     }
   } else {
-    throw new Error(`Unhandled error occurred. Status code: ${statusCode}. Original error: ${(err as Error)?.message ?? 'No error message available'}`);
+    // Generic error handling for non-HTTP errors
+    logger.warn(`API Error: ${error instanceof Error ? error.message : String(error)}`);
   }
-  // Ensure function always returns a value or throws an error
-  return Promise.reject(new Error(`Unhandled error occurred. Status code: ${statusCode}.`));
-};
+  
+  // Check if we should retry
+  if (maxRetries <= 0 || (statusCode === 404)) { // Don't retry 404s
+    throw error;
+  }
+  
+  // Wait before retrying, with increased delay for rate limits
+  await new Promise(resolve => setTimeout(resolve, delay));
+  
+  try {
+    // Attempt retry
+    logger.debug(`Retrying operation (${maxRetries} attempts remaining)`);
+    return await retryFn();
+  } catch (retryError) {
+    // Recursive retry with one fewer attempt
+    return handleApiError(retryError, retryFn, maxRetries - 1, delay * 1.5);
+  }
+}
 
+/**
+ * Log stats about invalid requests
+ */
 export const logInvalidRequests = () => {
-  logger.info(`Invalid request log: ${invalidRequestLogString}`);
+  const logString = Object.entries(invalidRequestLog)
+    .map(([code, count]) => `${code}: ${count}`)
+    .join(", ");
+  
+  logger.info(`Invalid request stats: ${logString || "None"}`);
 };

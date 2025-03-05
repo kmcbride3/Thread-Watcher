@@ -2,15 +2,17 @@ import {
   ChatInputCommandInteraction,
   EmbedBuilder,
   SlashCommandBuilder,
+  MessageFlagsBitField,
 } from "discord.js";
 import { Command, statusType } from "../../interfaces/command";
-import { threads, config } from "../../bot";
+import { config } from "../../index";
+import { threads } from "../../bot";
 
 const info: Command = {
   run: async (interaction: ChatInputCommandInteraction, buildBaseEmbed) => {
     const embeds: EmbedBuilder[] = [];
 
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: [MessageFlagsBitField.Flags.Ephemeral] });
 
     const botInfo = async () => {
       const getGuildCount = () => {

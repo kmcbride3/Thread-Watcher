@@ -1,5 +1,7 @@
 import { PermissionFlagsBits, EmbedBuilder, ThreadChannel } from "discord.js";
-import { client, logger, settings, threads } from "../../bot";
+import { client, threads } from "../../bot";
+import { logger } from "../../index";
+import { settings } from "../../bot";
 import { ThreadData } from "../../interfaces/database";
 import { bumpAutoTime, bumpUnknown } from "../threadActions";
 import { handleApiError } from "../apiErrorHandler";
@@ -41,6 +43,15 @@ const summary = {
 
 let running = false;
 
+const handleError = async (err: { status?: number; code?: number; message: string; headers?: Record<string, string> }, retryFunction: () => Promise<void>) => {
+  const error = {
+    statusCode: err.status || err.code || 500,
+    message: err.message,
+    headers: err.headers,
+  };
+  await handleApiError(error, retryFunction);
+};
+
 const makeVisible = () => {
   const t = queue.shift();
   if (!t) return (running = false);
@@ -52,8 +63,8 @@ const makeVisible = () => {
       if (!thread?.isThread()) return;
 
       if (thread.archived && thread.unarchivable) {
-        await thread.setArchived(false).catch((err: Error) => {
-          handleApiError(err as unknown as { code?: number; status?: number; headers?: Record<string, string>; retry_after?: number }, () => {
+        await thread.setArchived(false).catch(async (err: Error) => {
+          await handleError(err, async () => {
             queue.unshift(t);
             makeVisible();
             return Promise.resolve();
@@ -80,8 +91,8 @@ const makeVisible = () => {
          * or setting it to 10080 if it is anything else.
          */
         if (thread.autoArchiveDuration === 10080) {
-          await thread.setAutoArchiveDuration(4320).catch((err: Error) => {
-            handleApiError(err as unknown as { code?: number; status?: number; headers?: Record<string, string>; retry_after?: number }, () => {
+          await thread.setAutoArchiveDuration(4320).catch(async (err: Error) => {
+            await handleError(err, async () => {
               queue.unshift(t);
               makeVisible();
               return Promise.resolve();
@@ -92,8 +103,8 @@ const makeVisible = () => {
           });
           summary.worked++;
         } else {
-          await thread.setAutoArchiveDuration(10080).catch((err: Error) => {
-            handleApiError(err as unknown as { code?: number; status?: number; headers?: Record<string, string>; retry_after?: number }, () => {
+          await thread.setAutoArchiveDuration(10080).catch(async (err: Error) => {
+            await handleError(err, async () => {
               queue.unshift(t);
               makeVisible();
               return Promise.resolve();
@@ -121,8 +132,8 @@ const makeVisible = () => {
               value: `give me \`manage threads\` in <#${thread.parentId}>.`,
             },
           ]);
-          thread.send({ embeds: [e] }).catch((err: Error) => {
-            handleApiError(err as unknown as { code?: number; status?: number; headers?: Record<string, string>; retry_after?: number }, () => {
+          thread.send({ embeds: [e] }).catch(async (err: Error) => {
+            await handleError(err, async () => {
               queue.unshift(t);
               makeVisible();
               return Promise.resolve();
@@ -135,8 +146,8 @@ const makeVisible = () => {
         } else {
           thread.send(
             `**Bumping thread**\nDon't mind me, I'm just making sure this thread is visible under your channel 👉😎👉\n\n*prefer silent bumps? Give me \`manage threads\` in <#${thread.parentId}>*`,
-          ).catch((err: Error) => {
-              handleApiError(err as unknown as { code?: number; status?: number; headers?: Record<string, string>; retry_after?: number }, () => {
+          ).catch(async (err: Error) => {
+              await handleError(err, async () => {
                 queue.unshift(t);
                 makeVisible();
                 return Promise.resolve();
@@ -188,7 +199,7 @@ export default function bumpThreads(t: ThreadData[]) {
 export function getPossiblyArchivedThreads(threads: ThreadData[]) {
   const MaybeArchived: ThreadData[] = [];
   for (const thread of threads) {
-    if (thread.dueArchive < Date.now() / 1000 && thread.watching) {
+    if ((thread.dueArchive ?? 0) < Date.now() / 1000 && thread.watching) {
       MaybeArchived.push(thread);
     }
   }
@@ -196,7 +207,12 @@ export function getPossiblyArchivedThreads(threads: ThreadData[]) {
 }
 
 export async function bumpThreadsRoutine(): Promise<void> {
-  const needsBump = getPossiblyArchivedThreads([...threads.values()]);
+  const needsBump = getPossiblyArchivedThreads([...threads.values()].map(thread => ({
+    id: thread.id,
+    server: thread.server,
+    watching: thread.watching,
+    dueArchive: thread.dueArchive ?? 0,
+  })));
   if (needsBump.length === 0) {
     await logger.info("No threads to bump");
     return;

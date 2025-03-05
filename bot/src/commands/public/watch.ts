@@ -3,6 +3,8 @@ import {
   PermissionFlagsBits,
   SlashCommandBuilder,
   ThreadChannel,
+  DiscordAPIError,
+  MessageFlagsBitField
 } from "discord.js";
 import {
   addThread,
@@ -10,27 +12,43 @@ import {
   removeThread,
   setArchive,
 } from "../../utilities/threadActions";
-import { Command, statusType } from "../../interfaces/command";
+import { BuildBaseEmbedFunction, Command, statusType } from "../../interfaces/command";
+import { logger } from "../../index";
 import { threads } from "../../bot";
-import { handleRateLimit } from "../../utilities/apiErrorHandler";
+
+interface ThreadWatchOptions {
+  channel_types: number[];
+  description: string;
+  name: string;
+  type: number;
+}
 
 const watch: Command = {
-  run: async (interaction: ChatInputCommandInteraction, buildBaseEmbed) => {
-    await interaction.deferReply();
-    const thread =
-      interaction.options.getChannel("thread") || interaction.channel;
+  run: async (
+    interaction: ChatInputCommandInteraction, 
+    buildBaseEmbed: BuildBaseEmbedFunction
+  ): Promise<void> => {
+    await interaction.deferReply({ flags: [MessageFlagsBitField.Flags.Ephemeral] });
+    const thread: ThreadChannel | null =
+      interaction.options.getChannel("thread") as ThreadChannel || interaction.channel as ThreadChannel;
     if (!thread) {
-      buildBaseEmbed("Something went wrong", statusType.error, {
-        ephermal: true,
+      const embed = buildBaseEmbed("Something went wrong", statusType.error, {
         description:
           "for forum posts you __need__ to pass the post with the `thread` option.",
+      });
+      await interaction.reply({
+        embeds: [embed],
+        flags: [MessageFlagsBitField.Flags.Ephemeral]
       });
       return;
     }
     if (!thread?.type || ![10, 11, 12].includes(thread?.type)) {
-      buildBaseEmbed("Cannot watch that!", statusType.error, {
-        ephermal: true,
+      const embed = buildBaseEmbed("Cannot watch that!", statusType.error, {
         description: `<#${thread?.id}> is not a thread or forum post.`,
+      });
+      await interaction.reply({
+        embeds: [embed],
+        flags: [MessageFlagsBitField.Flags.Ephemeral]
       });
       return;
     }
@@ -39,16 +57,19 @@ const watch: Command = {
 
     if (threads.has(thread.id) && threads.get(thread.id)?.watching) {
       removeThread(thread.id)
-        .then(() => {
+        .then((): void => {
           buildBaseEmbed("Unwatched thread", statusType.success, {
             showAuthor: true,
             description: `Bot will no longer keep <#${thread.id}> active`,
           });
         })
-        .catch(() => {
-          buildBaseEmbed("Failed to unwatch thread", statusType.error, {
-            ephermal: true,
+        .catch(async (): Promise<void> => {
+          const embed = buildBaseEmbed("Failed to unwatch thread", statusType.error, {
             description: `Bot failed to unwatch <#${thread.id}>`,
+          });
+          await interaction.reply({
+            embeds: [embed],
+            flags: [MessageFlagsBitField.Flags.Ephemeral]
           });
         });
     } else {
@@ -60,7 +81,7 @@ const watch: Command = {
         ),
         interaction.guildId || "",
       )
-        .then(() => {
+        .then((): void => {
           if (!thread.archived || thread.unarchivable) {
             buildBaseEmbed("Watched thread", statusType.success, {
               showAuthor: true,
@@ -74,18 +95,18 @@ const watch: Command = {
           }
 
           if (thread.archived && thread.unarchivable) {
-            setArchive(thread).catch(async (err) => {
-              if (err.code === 429) {
-                await handleRateLimit(err.retry_after);
-                setArchive(thread);
-              }
+            setArchive(thread, false).catch((err: DiscordAPIError): void => {
+              logger.warn(`Failed to unarchive thread ${thread.id}: ${err}`);
             });
           }
         })
-        .catch(() => {
-          buildBaseEmbed("Failed to watch thread", statusType.error, {
-            ephermal: true,
+        .catch(async (): Promise<void> => {
+          const embed = buildBaseEmbed("Failed to watch thread", statusType.error, {
             description: `Bot failed to watch <#${thread.id}>`,
+          });
+          await interaction.reply({
+            embeds: [embed],
+            flags: [MessageFlagsBitField.Flags.Ephemeral]
           });
         });
     }
@@ -104,7 +125,7 @@ const watch: Command = {
       description: "thread to watch or unwatch",
       name: "thread",
       type: 7,
-    },
+    } as ThreadWatchOptions,
   ],
 };
 

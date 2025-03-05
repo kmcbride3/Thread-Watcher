@@ -1,6 +1,7 @@
 import { ConfigValue } from "src/interfaces/config";
 import { BackupProviders, DataBases } from "../database/DatabaseManager"
 import { validate } from "node-cron";
+import { logger } from "../logger";
 
 
 const token: ConfigValue = {
@@ -62,18 +63,18 @@ const cronTime: ConfigValue = {
 
 const validators = [ token, colour, webhook, dbType, cronTime, backupProvider ]
 
-export function validateValue( key: string, value: any ) {
+export function validateValue( key: string, value: string | boolean | null | undefined ) {
     const validator = validators.find(a => a.matchKeys.includes(key))
     if(!validator) return value
     const passes = validator.validate(value)
 
     if(passes) return value
     else if(validator.defaultOnInvalid && validator.default) {
-        console.warn(`CONFIG warning\nKey "${key}" with value "${value}" does not follow allowed format. Defaulting to "${validator.default}"`)
+        logger.warn(`CONFIG warning\nKey "${key}" with value "${value}" does not follow allowed format. Defaulting to "${validator.default}"`)
         return validator.default
     }
     else {
-        console.error(`CONFIG error\nKey "${key}" with value "${value}" does not follow allowed format. Aborting!`)
+        logger.error(`CONFIG error\nKey "${key}" with value "${value}" does not follow allowed format. Aborting!`)
         process.exit(1)
     }
 }

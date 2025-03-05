@@ -1,10 +1,10 @@
-import { ThreadChannel } from "discord.js";
-import { threads } from "../bot";
-import { removeThread } from "../utilities/threadActions";
+import { Events, ThreadChannel } from 'discord.js';
+import { threadManager } from '../utilities/threadManager';
 
-export default function() {
-    return function(thread: ThreadChannel) {
-        if(!threads.has(thread.id)) return
-        removeThread(thread.id)
-    }
+export default {
+  name: Events.ThreadDelete,
+  once: false,
+  execute(thread: ThreadChannel) {
+    threadManager.unwatchThread(thread.id)
+  }
 }

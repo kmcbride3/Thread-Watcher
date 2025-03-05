@@ -16,7 +16,7 @@ RUN mkdir -p /usr/src/bot/data && \
 # Set working directory
 WORKDIR /usr/src/bot
 
-# Copy only the package/tsconfig files and the src dir
+# Copy only the package/tsconfig files and the sample config file
 COPY ["package.json", "yarn.lock*", "tsconfig.json", "_config.json5", "/usr/src/bot/"]
 
 # Install all dependencies (including devDependencies)
@@ -40,14 +40,8 @@ ENV NODE_ENV production
 # Set working directory
 WORKDIR /usr/src/bot
 
-# Copy built node modules and binaries without including the source code or toolchain
-COPY --chown=1000:1000 --from=builder /usr/src/bot/node_modules /usr/src/bot/node_modules
-COPY --chown=1000:1000 --from=builder /usr/src/bot/dist /usr/src/bot/dist
-
-# Copy config and commandshash files, set permissions on bot directory
-COPY --chown=1000:1000 --from=builder /usr/src/bot/_config.json5 /usr/src/bot/_config.json5
-COPY --chown=1000:1000 --from=builder /usr/src/bot/.commandshash /usr/src/bot/.commandshash
-COPY --chown=1000:1000 --from=builder /usr/src/bot/data /usr/src/bot/data
+# Copy built node modules, binaries, config, commandshash file, and data directory in one command
+COPY --chown=1000:1000 --from=builder /usr/src/bot /usr/src/bot/ --chown=1000:1000 --from=builder /usr/src/bot/node_modules /usr/src/bot/node_modules/ --chown=1000:1000 --from=builder /usr/src/bot/dist /usr/src/bot/dist/ --chown=1000:1000 --from=builder /usr/src/bot/_config.json5 /usr/src/bot/_config.json5 --chown=1000:1000 --from=builder /usr/src/bot/.commandshash /usr/src/bot/.commandshash --chown=1000:1000 --from=builder /usr/src/bot/data /usr/src/bot/
 
 # Start the bot & register slash commands.
 CMD [ "./dist/index.js", "-reg_commands" ]

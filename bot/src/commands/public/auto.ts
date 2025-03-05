@@ -2,15 +2,17 @@ import {
   ChatInputCommandInteraction,
   PermissionFlagsBits,
   SlashCommandBuilder,
+  MessageFlagsBitField
 } from "discord.js";
 import { Command, statusType } from "../../interfaces/command";
 
 const auto: Command = {
   run: async (interaction: ChatInputCommandInteraction, buildBaseEmbed) => {
-    buildBaseEmbed("Depracated", statusType.warning, {
+    const embed = buildBaseEmbed("Depreciated", statusType.warning, {
       description:
         "The functionality of this command has been moved to `/batch`",
     });
+    await interaction.reply({ embeds: [embed], flags: [MessageFlagsBitField.Flags.Ephemeral] });
   },
   gatekeeping: {
     userPermissions: [PermissionFlagsBits.ManageThreads],

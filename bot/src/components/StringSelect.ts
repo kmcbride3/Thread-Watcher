@@ -1,10 +1,11 @@
-import { AnySelectMenuInteraction, StringSelectMenuBuilder } from "discord.js"
+import { AnySelectMenuInteraction, StringSelectMenuBuilder, Collection, MessageFlagsBitField } from "discord.js"
+import { logger } from "../utilities/logger"
 import TwGenericComponent from "../interfaces/genericComponent"
 
 type stringSelectSubmit = ( interaction: AnySelectMenuInteraction ) => void
 export type stringSelectFilter = ( interaction: AnySelectMenuInteraction ) => boolean
 
-const StringSelectInteractionQueue: Map<string, TwStringSelect> = new Map<string, TwStringSelect>()
+const StringSelectInteractionQueue: Collection<string, TwStringSelect> = new Collection<string, TwStringSelect>()
 
 export { StringSelectInteractionQueue }
 
@@ -27,11 +28,14 @@ export default class TwStringSelect implements TwGenericComponent<AnySelectMenuI
     }
 
     _middleware(interaction: AnySelectMenuInteraction) {
-        console.log("middleware function called")
+        logger.info("middleware function called")
         if(this.filter && this.callback && this.filter(interaction)) {
             this.callback(interaction)
         } else {
-            interaction.reply({ ephemeral: true, content: "Nuh uh <:statusurgent:960959148848214017>" })
+            interaction.reply({
+                content: "Nuh uh <:statusurgent:960959148848214017>",
+                flags: [MessageFlagsBitField.Flags.Ephemeral]
+            })
         }
     }
 

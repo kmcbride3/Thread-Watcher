@@ -1,14 +1,12 @@
-import { config, logger, webLog } from "../../index";
+import { config, webLog } from "../../index";
 import { schedule } from "node-cron";
-import {
-  BackupProviders,
-  databaseInstance,
-  getBackupProvider,
-} from "../database/DatabaseManager";
+import { BackupProviders, getBackupProvider } from "../database/DatabaseManager";
 import { join } from "path";
 import { existsSync, mkdirSync, readdirSync, rmSync, lstatSync } from "fs";
+import { Database } from "../../interfaces/database";
+import { Log76 } from "../logger";
 
-export default function scheduleBackups(database: databaseInstance) {
+export default function scheduleBackups(database: Database, logger: Log76) {
   if (!config.database.backupInterval) return;
   const backupsDirPath = join(
     config.database.options.dataLocation,

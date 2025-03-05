@@ -1,15 +1,23 @@
-import { ChannelData, Database, ThreadData } from "src/interfaces/database";
+import { ChannelData, Database, ThreadData } from "../../interfaces/database"; // Fix import path
 import sql, { Database as sqliteDatabase } from "better-sqlite3";
 import { ConfigFile } from "../cnf/index";
 import { join } from "path";
 import { getBackupName } from "./DatabaseManager";
 
-// This typename is inappropriate but honestly I dont care.
-// I am angry at the typechecker grrrrrrrrrrr
-// also i am angry at discord user lizard grrrrrrrrrr
-interface AssType extends Omit<ChannelData, "tags" | "roles"> {
-  tags: string;
-  roles: string;
+// Type for internal database rows
+interface ChannelRow {
+  id: string;
+  server: string;
+  regex?: string;
+  roles?: string;
+  tags?: string;
+}
+
+interface ThreadRow {
+  id: string;
+  server: string;
+  dueArchive: number;
+  watching: number;
 }
 
 class sqlite implements Database {
@@ -45,29 +53,29 @@ class sqlite implements Database {
     });
   }
 
-  setConfigValue(guildID: string, key: string, value: string): Promise<void> {
+  setConfigValue(server: string, key: string, value: string): Promise<void> {
     return new Promise((resolve) => {
       this.db
         .prepare("REPLACE INTO config VALUES(?,?,?)")
-        .run(guildID, key, value);
+        .run(server, key, value);
       resolve();
     });
   }
 
-  deleteConfigValue(guildID: string, key: string): Promise<void> {
+  deleteConfigValue(server: string, key: string): Promise<void> {
     return new Promise((resolve) => {
       this.db
         .prepare("DELETE FROM config WHERE server = ? AND cfg_id = ?")
-        .run(guildID, key);
+        .run(server, key);
       resolve();
     });
   }
 
-  getConfigValue(guildID: string, key: string): Promise<string> {
+  getConfigValue(server: string, key: string): Promise<string> {
     return new Promise((resolve, reject) => {
       const res = this.db
         .prepare("SELECT * FROM config WHERE server = ? AND cfg_id = ?")
-        .get(guildID, key) as { server: string; cfg_id: string; value: string };
+        .get(server, key) as { server: string; cfg_id: string; value: string };
       if (!res) return reject("NO ROW FOUND");
       resolve(res.value);
     });
@@ -83,11 +91,11 @@ class sqlite implements Database {
     });
   }
 
-  insertThread(id: string, dueArchive: number, guildID: string): Promise<void> {
+  insertThread(id: string, dueArchive: number, server: string): Promise<void> {
     return new Promise((resolve) => {
       this.db
         .prepare("REPLACE INTO threads VALUES(?,?,?,1)")
-        .run(id, guildID, dueArchive);
+        .run(id, server, dueArchive);
       resolve();
     });
   }
@@ -101,21 +109,21 @@ class sqlite implements Database {
     });
   }
 
-  getChannels(guildID: string): Promise<ChannelData[]> {
+  getChannels(server: string): Promise<ChannelData[]> {
     return new Promise((resolve) => {
       const returnArr: ChannelData[] = [];
       returnArr.push(
         ...this.db
           .prepare("SELECT * FROM channels WHERE server = ?")
-          .all(guildID)
+          .all(server)
           .map((i) => {
-            const item: AssType = i as AssType;
+            const item: ChannelRow = i as ChannelRow;
             const rv: ChannelData = {
               id: item.id,
-              server: item.server,
-              regex: item?.regex,
-              tags: item?.tags.split(","),
-              roles: item?.roles.split(","),
+              server: item.server, // Keep using server field name
+              regex: item?.regex || "",
+              tags: item?.tags?.split(",") || [],
+              roles: item?.roles?.split(",") || [],
             };
             return rv;
           }),
@@ -124,13 +132,13 @@ class sqlite implements Database {
     });
   }
 
-  getThreads(guildID: string): Promise<ThreadData[]> {
+  getThreads(server: string): Promise<ThreadData[]> {
     return new Promise((resolve) => {
       const returnArr: ThreadData[] = [];
       returnArr.push(
         ...(this.db
           .prepare("SELECT * FROM threads WHERE server = ?")
-          .all(guildID) as ThreadData[]),
+          .all(server) as ThreadData[]),
       );
       resolve(returnArr);
     });
@@ -150,10 +158,10 @@ class sqlite implements Database {
     });
   }
 
-  deleteGuild(guildID: string): Promise<void> {
+  deleteGuild(server: string): Promise<void> {
     return new Promise((resolve) => {
-      this.db.prepare("DELETE FROM channels WHERE server = ?").all(guildID);
-      this.db.prepare("DELETE FROM threads WHERE server = ?").all(guildID);
+      this.db.prepare("DELETE FROM channels WHERE server = ?").all(server);
+      this.db.prepare("DELETE FROM threads WHERE server = ?").all(server);
       resolve();
     });
   }
@@ -200,6 +208,32 @@ class sqlite implements Database {
           resolve(backupPath);
         })
         .catch(reject);
+    });
+  }
+
+  /**
+   * Get all threads that are being watched
+   */
+  getAllWatchedThreads(): Promise<ThreadData[]> {
+    return new Promise((resolve) => {
+      const threads = this.db
+        .prepare("SELECT id, server, dueArchive, watching FROM threads WHERE watching = 1")
+        .all() as ThreadRow[];
+      
+      resolve(threads.map(thread => ({
+        id: thread.id,
+        server: thread.server,
+        dueArchive: thread.dueArchive,
+        watching: Boolean(thread.watching)
+      })));
+    });
+  }
+
+  // Implement close method if not already present
+  close(): Promise<void> {
+    return new Promise((resolve) => {
+      this.db.close();
+      resolve();
     });
   }
 }

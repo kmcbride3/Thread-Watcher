@@ -1,8 +1,8 @@
-import { ThreadChannel } from "discord.js";
-import { db, logger } from "../bot";
+import { Events, ThreadChannel } from "discord.js";
+import { db, logger } from "../index";
 import { addThread, dueArchiveTimestamp } from "../utilities/threadActions";
 import { strToRegex } from "../utilities/regex";
-import { ChannelData } from "src/interfaces/database";
+import { ChannelData } from "../interfaces/database";
 
 export function regMatch(str: string, reg: RegExp, inverted: boolean) {
   return reg.test(str) === !inverted;
@@ -53,8 +53,10 @@ export async function threadShouldBeWatched(
   return passes;
 }
 
-export default function() {
-  return async function(thread: ThreadChannel) {
+export default {
+  name: Events.ThreadCreate,
+  once: false,
+  async execute(thread: ThreadChannel) {
     const channels = await db.getChannels(thread.guildId);
     const auto =
       channels.find((t) => t.id == thread.parentId) ||
@@ -83,5 +85,5 @@ export default function() {
         `Not adding thread "${thread.id}" in ${thread.guildId} as filters prevent it`,
       );
     }
-  };
+  }
 }

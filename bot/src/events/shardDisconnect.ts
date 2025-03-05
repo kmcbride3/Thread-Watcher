@@ -1,12 +1,10 @@
-import { Shard, ShardingManager } from "discord.js";
-import { logger } from "../bot";
+import { Events, CloseEvent } from "discord.js";
+import { logger } from "../index";
 
-export default function ({ manager }: { manager: ShardingManager }) {
-  return function (shardId: number): void {
-    logger.warn(`Shard ${shardId} disconnected. Attempting to respawn that shard...`);
-    const shardInstance = manager.shards.get(shardId) as Shard;
-    if (shardInstance && typeof shardInstance.respawn === "function") {
-      shardInstance.respawn();
-    }
-  };
-}
+export default {
+  name: Events.ShardDisconnect,
+  once: false,
+  execute(closeEvent: CloseEvent, shardId: number) {
+    logger.warn(`Shard ${shardId} disconnected: code ${closeEvent.code}, reason: ${closeEvent.reason || "No reason provided"}`);
+  }
+};

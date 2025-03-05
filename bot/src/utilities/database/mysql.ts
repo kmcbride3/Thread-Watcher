@@ -4,6 +4,14 @@ import { ConfigFile } from "../cnf/index";
 import { join } from "path";
 import { getBackupName } from "./DatabaseManager";
 import { exec } from "child_process";
+import { Log76 } from "../logger";
+
+interface ThreadRow {
+  id: string;
+  server: string;
+  dueArchive: number;
+  watching: number | boolean;
+}
 
 class mysql implements Database {
   connection: Pool;
@@ -14,12 +22,14 @@ class mysql implements Database {
     password: string;
     database: string;
   };
+  private logger: Log76;
 
-  constructor(config: ConfigFile) {
+  constructor(config: ConfigFile, logger: Log76) {
     const { host, user, password, database } = config.database.options;
 
     this.database = database;
     this.connDetails = { host, user, password, database };
+    this.logger = logger;
 
     this.connection = createPool({
       host,
@@ -35,21 +45,21 @@ class mysql implements Database {
         `CREATE TABLE IF NOT EXISTS \`${this.database}\`.\`threads\` (\`id\` VARCHAR(20) NOT NULL, \`server\` VARCHAR(20) NOT NULL, \`dueArchive\` INT NOT NULL, watching BOOLEAN, PRIMARY KEY (\`ID\`));`,
         (err) => {
           if (err) {
-            console.error("[MYSQL] could not create table threads", err);
+            this.logger.error(`[MYSQL] could not create table threads: ${String(err)}`);
             throw new Error("[MYSQL] could not create table threads");
           }
           this.connection.query(
             `CREATE TABLE IF NOT EXISTS \`${this.database}\`.\`channels\` (\`id\` VARCHAR(20) NOT NULL, \`server\` VARCHAR(20) NOT NULL, \`regex\` TINYTEXT, \`roles\` TEXT, \`tags\` TEXT);`,
             (err) => {
               if (err) {
-                console.error("[MYSQL] could not create table channels", err);
+                this.logger.error(`[MYSQL] could not create table channels: ${String(err)}`);
                 throw new Error("[MYSQL] could not create table channels");
               }
               this.connection.query(
                 `CREATE TABLE IF NOT EXISTS \`${this.database}\`.\`config\` (\`server\` VARCHAR(20) NOT NULL, \`cfg_id\` VARCHAR(20) NOT NULL, \`value\` VARCHAR(20) NOT NULL, PRIMARY KEY(\`server\`, \`cfg_id\`))`,
                 (err) => {
                   if (err) {
-                    console.error("[MYSQL] could not create table config", err);
+                    this.logger.error(`[MYSQL] could not create table config: ${String(err)}`);
                     throw new Error("[MYSQL] could not create table config");
                   }
                   resolve();
@@ -115,11 +125,11 @@ class mysql implements Database {
     });
   }
 
-  insertThread(id: string, dueArchive: number, guildID: string): Promise<void> {
+  insertThread(id: string, dueArchive: number, server: string): Promise<void> {
     return new Promise((resolve, reject) => {
       this.connection.query(
         "REPLACE INTO threads VALUES(?,?,?,true)",
-        [id, guildID, dueArchive],
+        [id, server, dueArchive],
         (err) => {
           if (err) return reject(err);
           resolve();
@@ -152,7 +162,7 @@ class mysql implements Database {
      * @returns 
      */
 
-  getChannels(guildID: string): Promise<ChannelData[]> {
+  getChannels(server: string): Promise<ChannelData[]> {
     interface rawChannelData {
       id: string;
       server: string;
@@ -165,7 +175,7 @@ class mysql implements Database {
       const returnArr: ChannelData[] = [];
       this.connection.query(
         "SELECT * FROM channels WHERE server = ?",
-        [guildID],
+        [server],
         (err, res: rawChannelData[]) => {
           if (err || !res) reject(err);
 
@@ -184,11 +194,11 @@ class mysql implements Database {
     });
   }
 
-  getThreads(guildID: string): Promise<ThreadData[]> {
+  getThreads(server: string): Promise<ThreadData[]> {
     return new Promise((resolve, reject) => {
       this.connection.query(
         "SELECT * FROM threads WHERE server = ? AND watching = 1",
-        [guildID],
+        [server],
         (err, res) => {
           if (err) reject(err);
           return resolve(res);
@@ -223,17 +233,17 @@ class mysql implements Database {
     });
   }
 
-  deleteGuild(guildID: string): Promise<void> {
+  deleteGuild(server: string): Promise<void> {
     return new Promise((resolve, reject) => {
       const promises = [];
       promises.push(
         this.connection.query("DELETE FROM channels WHERE server = ?", [
-          guildID,
+          server,
         ]),
       );
       promises.push(
         this.connection.query("DELETE FROM threads WHERE server = ?", [
-          guildID,
+          server,
         ]),
       );
       Promise.all(promises)
@@ -294,6 +304,41 @@ class mysql implements Database {
           return reject(new Error(stderr));
         }
         resolve(backupPath);
+      });
+    });
+  }
+
+  /**
+   * Get all threads that are being watched
+   */
+  getAllWatchedThreads(): Promise<ThreadData[]> {
+    return new Promise((resolve, reject) => {
+      this.connection.query(
+        "SELECT id, server, dueArchive, watching FROM threads WHERE watching = 1",
+        (err: Error | null, results: ThreadRow[]) => {
+          if (err) {
+        this.logger.error(`Error fetching watched threads: ${err}`);
+        return reject(err);
+          }
+          
+          const threads: ThreadData[] = results.map((row: ThreadRow) => ({
+        id: row.id,
+        server: row.server,
+        dueArchive: row.dueArchive,
+        watching: Boolean(row.watching)
+          }));
+          
+          resolve(threads);
+        }
+      );
+    });
+  }
+
+  close(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.connection.end(err => {
+        if (err) reject(err);
+        else resolve();
       });
     });
   }

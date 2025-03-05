@@ -20,25 +20,27 @@ export interface Database {
   insertThread: (
     id: string,
     dueArchive: number,
-    guildID: string,
+    server: string,
   ) => Promise<void>;
   updateDueArchive: (id: string, dueArchive: number) => Promise<void>;
-  getChannels: (guildID: string) => Promise<ChannelData[]>;
-  getThreads: (guildID: string) => Promise<ThreadData[]>;
+  getChannels: (server: string) => Promise<ChannelData[]>;
+  getThreads: (server: string) => Promise<ThreadData[]>;
   deleteThread: (threadID: string) => Promise<void>;
   deleteChannel: (channelID: string) => Promise<void>;
-  deleteGuild: (guildID: string) => Promise<void>;
+  deleteGuild: (server: string) => Promise<void>;
   unwatchThread: (threadID: string) => Promise<void>;
   getNumberOfThreads: () => Promise<number>;
   getNumberOfChannels: () => Promise<number>;
   setConfigValue: (
-    guildID: string,
+    server: string,
     key: string,
     value: string,
   ) => Promise<void>;
-  deleteConfigValue: (guildID: string, key: string) => Promise<void>;
-  getConfigValue: (guildID: string, key: string) => Promise<string>;
+  deleteConfigValue: (server: string, key: string) => Promise<void>;
+  getConfigValue: (server: string, key: string) => Promise<string>;
   createBackup: (baseDir: string) => Promise<string>;
+  getAllWatchedThreads: () => Promise<ThreadData[]>;
+  close: () => Promise<void>;
 }
 
 export interface BackupProvider {
