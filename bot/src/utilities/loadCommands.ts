@@ -21,7 +21,8 @@ export default async function loadCommands(
 
         if (fileStat.isFile() && file.endsWith(".js")) {
           const modulePath = path.join(baseDir, dirDive, file);
-          const commandModule = await import(`${modulePath}?update=${Date.now()}`);
+          const commandModule = await import(modulePath);
+
           const cmdReq = commandModule.default;
 
           if (!cmdReq) {

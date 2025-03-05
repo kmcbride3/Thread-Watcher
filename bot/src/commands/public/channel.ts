@@ -1,6 +1,6 @@
 import { ChatInputCommandInteraction, PermissionFlagsBits, SlashCommandBuilder } from "discord.js";
 import { Command, statusType } from "../../interfaces/command";
-import { database as db } from "../../index";
+import { db } from "../../index";
 
 const info: Command = {
   run: async (interaction: ChatInputCommandInteraction, buildBaseEmbed) => {
@@ -25,12 +25,11 @@ const info: Command = {
       }
 
       db.insertChannel({
-        guild: interaction.guildId ?? "",
+        server: interaction.guildId ?? "",
         id: channel.id,
         regex: "",
         roles: [],
-        tags: [],
-        type: 0,
+        tags: []
       });
       buildBaseEmbed("Added channel", statusType.success);
     } else {

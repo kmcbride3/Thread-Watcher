@@ -1,4 +1,4 @@
-import { ConfigValue } from "../interfaces/config";
+import { ConfigValue } from "../../interfaces/config";
 import { BackupProviders, DataBases } from "../database/DatabaseManager";
 import { validate } from "node-cron";
 import { logger } from "../logger";

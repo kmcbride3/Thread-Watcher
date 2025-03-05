@@ -23,7 +23,7 @@ import {
   MessageFlagsBitField,
 } from "discord.js";
 import { Command, statusType } from "../../interfaces/command";
-import { database as db } from "../../index";
+import { db } from "../../index";
 import { threads as threadsList } from "../../bot";
 import { threadShouldBeWatched } from "../../events/threadCreate";
 import { strToRegex, validRegex } from "../../utilities/regex";
@@ -93,11 +93,10 @@ const handleThreadActioning = async (
       await threadShouldBeWatched(
         {
           id: thread.id,
-          guild: thread.guildId,
+          server: thread.guildId,
           regex: filters.regex ?? "",
           roles: filters.roles.map((r) => r?.id).filter((id): id is string => id !== undefined),
-          tags: filters.tags.map((t) => t?.id).filter((id): id is string => id !== undefined),
-          type: 0,
+          tags: filters.tags.map((t) => t?.id).filter((id): id is string => id !== undefined)
         },
         thread
       )
@@ -557,11 +556,10 @@ const batch: Command = {
 
             db.insertChannel({
               id: parent.id,
-              guild: interaction.guildId ?? "",
+              server: interaction.guildId ?? "",
               regex: filters.regex,
               tags: filters.tags.map((t) => t?.id).filter((id): id is string => id !== undefined),
-              roles: filters.roles.map((r) => r?.id).filter((id): id is string => id !== undefined),
-              type: 0, // Adding the required type property
+              roles: filters.roles.map((r) => r?.id).filter((id): id is string => id !== undefined)
             });
           }
 
@@ -595,11 +593,10 @@ const batch: Command = {
         if (alreadyExists) await db.deleteChannel(parent.id);
         db.insertChannel({
           id: parent.id,
-          guild: interaction.guildId,
+          server: interaction.guildId,
           regex: filters.regex,
           tags: filters.tags.map((t) => t?.id).filter((id): id is string => id !== undefined),
-          roles: filters.roles.map((r) => r?.id).filter((id): id is string => id !== undefined),
-          type: 0, // Adding the required type property
+          roles: filters.roles.map((r) => r?.id).filter((id): id is string => id !== undefined)
         });
       }
       sendResultsEmbed(result);

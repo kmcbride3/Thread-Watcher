@@ -34,3 +34,7 @@ export interface Database {
   getAllWatchedThreads: () => Promise<ThreadData[]>;
   close: () => Promise<void>;
 }
+
+export interface BackupProvider {
+  createBackup: (path: string) => Promise<`https://${string}` | null>;
+}

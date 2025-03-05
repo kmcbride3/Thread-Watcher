@@ -5,6 +5,7 @@ import {
   ThreadChannel,
   DiscordAPIError,
   MessageFlagsBitField,
+  EmbedBuilder,
 } from "discord.js";
 import {
   addThread,
@@ -12,7 +13,7 @@ import {
   removeThread,
   setArchive,
 } from "../../utilities/threadActions";
-import { BuildBaseEmbedFunction, Command, statusType } from "../../interfaces/command";
+import { Command, statusType, baseEmbedOptions } from "../../interfaces/command";
 import { logger } from "../../index";
 import { threads } from "../../bot";
 
@@ -22,11 +23,10 @@ interface ThreadWatchOptions {
   name: string;
   type: number;
 }
-
 const watch: Command = {
   run: async (
     interaction: ChatInputCommandInteraction,
-    buildBaseEmbed: BuildBaseEmbedFunction
+    buildBaseEmbed: (title: string, status: statusType, misc?: baseEmbedOptions) => EmbedBuilder
   ): Promise<void> => {
     await interaction.deferReply({
       flags: [MessageFlagsBitField.Flags.Ephemeral],
@@ -59,10 +59,14 @@ const watch: Command = {
 
     if (threads.has(thread.id) && threads.get(thread.id)?.watching) {
       removeThread(thread.id)
-        .then((): void => {
-          buildBaseEmbed("Unwatched thread", statusType.success, {
+        .then(async (): Promise<void> => {
+          const embed = buildBaseEmbed("Unwatched thread", statusType.success, {
             showAuthor: true,
             description: `Bot will no longer keep <#${thread.id}> active`,
+          });
+          await interaction.reply({
+            embeds: [embed],
+            flags: [MessageFlagsBitField.Flags.Ephemeral],
           });
         })
         .catch(async (): Promise<void> => {
@@ -78,23 +82,32 @@ const watch: Command = {
       addThread(
         thread.id,
         dueArchiveTimestamp(thread.autoArchiveDuration || 0, thread.lastMessage?.createdAt),
-        interaction.guildId || ""
+        thread.guildId
       )
-        .then((): void => {
-          if (!thread.archived || thread.unarchivable) {
-            buildBaseEmbed("Watched thread", statusType.success, {
+        .then(async () => {
+          const canManageThread = thread.manageable && !thread.locked;
+          if (canManageThread) {
+            const embed = buildBaseEmbed("Watched thread", statusType.success, {
               showAuthor: true,
               description: `Bot will keep <#${thread.id}> active`,
             });
+            await interaction.reply({
+              embeds: [embed],
+              flags: [MessageFlagsBitField.Flags.Ephemeral],
+            });
           } else {
-            buildBaseEmbed("Watched thread but...", statusType.warning, {
+            const embed = buildBaseEmbed("Watched thread but...", statusType.warning, {
               showAuthor: true,
               description: `Bot has added <#${thread.id}> to the watchlist.\n\nHowever, the thread will __**NOT**__ be kept active as the bot has insufficient permissions for the thread`,
+            });
+            await interaction.reply({
+              embeds: [embed],
+              flags: [MessageFlagsBitField.Flags.Ephemeral],
             });
           }
 
           if (thread.archived && thread.unarchivable) {
-            setArchive(thread, false).catch((err: DiscordAPIError): void => {
+            setArchive(thread, 10080).catch((err: DiscordAPIError): void => {
               logger.warn(`Failed to unarchive thread ${thread.id}: ${err}`);
             });
           }

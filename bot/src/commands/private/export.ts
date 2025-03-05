@@ -1,7 +1,7 @@
 import { ChatInputCommandInteraction, SlashCommandBuilder } from "discord.js";
-import { database as db } from "../../index";
+import { db } from "../../index";
 import { Command, statusType } from "../../interfaces/command";
-import { ChannelData, ThreadData } from "../interfaces/database";
+import { ChannelData, ThreadData } from "../../interfaces/database";
 
 const escapeCsvValue = (i: string | boolean | number | (string | null | undefined)[]) => {
   const v: string = typeof i === "object" ? i.join(",") : i.toString();
