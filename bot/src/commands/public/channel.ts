@@ -13,7 +13,7 @@ const info: Command = {
     const command = interaction.options.getSubcommand(true);
 
     const alrExists = (await db.getChannels(interaction.guildId ?? "")).find(
-      (t) => t.id == channel.id
+      (t) => t.id === channel.id
     );
 
     if (command === "add") {

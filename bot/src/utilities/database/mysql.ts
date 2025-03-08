@@ -3,19 +3,21 @@ import { createPool, Pool } from "mysql";
 import { ConfigFile } from "../cnf/index";
 import { join } from "path";
 import { getBackupName } from "./DatabaseManager";
-import { exec } from "child_process";
+import { spawn } from "child_process";
+import { existsSync, mkdirSync, createWriteStream } from "fs";
 import { Log76 } from "../logger";
 
 interface ThreadRow {
   id: string;
   server: string;
-  dueArchive: number;
   watching: number | boolean;
+  dueArchive: number;
 }
 
-class mysql implements Database {
+export default class mysql implements Database {
   connection: Pool;
   database: string;
+  private config: ConfigFile;
   private connDetails: {
     host: string;
     user: string;
@@ -29,6 +31,7 @@ class mysql implements Database {
 
     this.database = database;
     this.connDetails = { host, user, password, database };
+    this.config = config;
     this.logger = logger;
 
     this.connection = createPool({
@@ -48,6 +51,7 @@ class mysql implements Database {
             this.logger.error(`[MYSQL] could not create table threads: ${String(err)}`);
             throw new Error("[MYSQL] could not create table threads");
           }
+
           this.connection.query(
             `CREATE TABLE IF NOT EXISTS \`${this.database}\`.\`channels\` (\`id\` VARCHAR(20) NOT NULL, \`server\` VARCHAR(20) NOT NULL, \`regex\` TINYTEXT, \`roles\` TEXT, \`tags\` TEXT);`,
             (err) => {
@@ -55,6 +59,7 @@ class mysql implements Database {
                 this.logger.error(`[MYSQL] could not create table channels: ${String(err)}`);
                 throw new Error("[MYSQL] could not create table channels");
               }
+
               this.connection.query(
                 `CREATE TABLE IF NOT EXISTS \`${this.database}\`.\`config\` (\`server\` VARCHAR(20) NOT NULL, \`cfg_id\` VARCHAR(20) NOT NULL, \`value\` VARCHAR(20) NOT NULL, PRIMARY KEY(\`server\`, \`cfg_id\`))`,
                 (err) => {
@@ -93,6 +98,7 @@ class mysql implements Database {
       );
     });
   }
+
   getConfigValue(guildID: string, key: string): Promise<string> {
     return new Promise((resolve, reject) => {
       this.connection.query(
@@ -101,7 +107,7 @@ class mysql implements Database {
         (err, res: { server: string; cfg_id: string; value: string }[]) => {
           if (err) return reject(err);
           if (res?.[0]) return resolve(res[0]["value"]);
-          return reject("NO ROW FOUND");
+          return reject(new Error("NO ROW FOUND"));
         }
       );
     });
@@ -252,7 +258,6 @@ class mysql implements Database {
         let count = res[0];
         if (count) count = Object.values(res[0])[0];
         else count = NaN;
-
         return resolve(count);
       });
     });
@@ -265,8 +270,48 @@ class mysql implements Database {
         let count = res[0];
         if (count) count = Object.values(res[0])[0];
         else count = NaN;
-
         return resolve(count);
+      });
+    });
+  }
+
+  backup(options: { path: string }): Promise<boolean> {
+    return new Promise((resolve) => {
+      // Create the directory if it doesn't exist
+      if (!existsSync(options.path)) {
+        mkdirSync(options.path, { recursive: true });
+      }
+
+      // Get the current date for the filename
+      const date = new Date();
+      const filename = `backup-${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}-${date.getHours()}-${date.getMinutes()}-${date.getSeconds()}.sql`;
+      const filepath = join(options.path, filename);
+
+      // Security: Only allow predefined parameters from configuration
+      // Use a safer approach with spawn instead of exec
+      const mysqlDump = spawn("mysqldump", [
+        `-h${this.connDetails.host}`,
+        `-u${this.connDetails.user}`,
+        `-p${this.connDetails.password}`,
+        `${this.connDetails.database}`,
+      ]);
+
+      // Pipe the output to a file stream
+      const fileStream = createWriteStream(filepath);
+      mysqlDump.stdout.pipe(fileStream);
+
+      mysqlDump.stderr.on("data", (data) => {
+        this.logger.error(`mysqldump error: ${data}`);
+      });
+
+      mysqlDump.on("close", (code) => {
+        if (code === 0) {
+          this.logger.done(`MySQL Backup Created: ${filename}`);
+          resolve(true);
+        } else {
+          this.logger.error(`mysqldump failed with code ${code}`);
+          resolve(false);
+        }
       });
     });
   }
@@ -274,17 +319,17 @@ class mysql implements Database {
   createBackup(baseDir: string): Promise<string> {
     return new Promise((resolve, reject) => {
       const backupPath = `${join(baseDir, getBackupName())}.sql`;
-      const command = `mysqldump --host=${this.connDetails.host} --user=${this.connDetails.user} --password=${this.connDetails.password} ${this.connDetails.database} > ${backupPath}`;
 
-      exec(command, (error, stdout, stderr) => {
-        if (error) {
-          return reject(error);
-        }
-        if (stderr) {
-          return reject(new Error(stderr));
-        }
-        resolve(backupPath);
-      });
+      // Use the safer spawn-based backup method
+      this.backup({ path: baseDir })
+        .then((success) => {
+          if (success) {
+            resolve(backupPath);
+          } else {
+            reject(new Error("Backup failed"));
+          }
+        })
+        .catch(reject);
     });
   }
 
@@ -323,5 +368,3 @@ class mysql implements Database {
     });
   }
 }
-
-export default mysql;

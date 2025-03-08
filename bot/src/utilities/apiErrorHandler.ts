@@ -40,16 +40,17 @@ export async function handleApiError<T>(
   error: unknown,
   retryFn: () => Promise<T>,
   maxRetries = 1,
-  delay = 1000
+  initialDelay = 1000
 ): Promise<T> {
   // Check for specific status codes and track them
   const statusCode = getStatusCode(error);
+  let currentDelay = initialDelay;
+
   if (statusCode) {
     const statusString = statusCode.toString();
     if (statusString in invalidRequestLog) {
       invalidRequestLog[statusString]++;
 
-      // Log different messages based on status code
       switch (statusCode) {
         case 401:
           logger.warn("API Error: Unauthorized. Check your bot token.");
@@ -59,8 +60,7 @@ export async function handleApiError<T>(
           break;
         case 429:
           logger.warn("API Error: Rate limited. Waiting before retry.");
-          // For rate limits, we might want to use a longer delay
-          delay = Math.max(delay, 5000);
+          currentDelay = Math.max(currentDelay, 5000);
           break;
         case 404:
           logger.warn("API Error: Resource not found. It may have been deleted.");
@@ -80,22 +80,16 @@ export async function handleApiError<T>(
     logger.warn(`API Error: ${error instanceof Error ? error.message : String(error)}`);
   }
 
-  // Check if we should retry
   if (maxRetries <= 0 || statusCode === 404) {
-    // Don't retry 404s
     throw error;
   }
-
-  // Wait before retrying, with increased delay for rate limits
-  await new Promise((resolve) => setTimeout(resolve, delay));
+  await new Promise((resolve) => setTimeout(resolve, currentDelay));
 
   try {
-    // Attempt retry
     logger.debug(`Retrying operation (${maxRetries} attempts remaining)`);
     return await retryFn();
   } catch (retryError) {
-    // Recursive retry with one fewer attempt
-    return handleApiError(retryError, retryFn, maxRetries - 1, delay * 1.5);
+    return handleApiError(retryError, retryFn, maxRetries - 1, currentDelay * 1.5);
   }
 }
 

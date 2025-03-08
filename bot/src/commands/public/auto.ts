@@ -1,6 +1,6 @@
 import {
   ChatInputCommandInteraction,
-  PermissionFlagsBits,
+  PermissionsBitField,
   SlashCommandBuilder,
   MessageFlagsBitField,
 } from "discord.js";
@@ -17,7 +17,7 @@ const auto: Command = {
     });
   },
   gatekeeping: {
-    userPermissions: [PermissionFlagsBits.ManageThreads],
+    userPermissions: [PermissionsBitField.Flags.ManageThreads],
     ownerOnly: false,
     devServerOnly: false,
   },

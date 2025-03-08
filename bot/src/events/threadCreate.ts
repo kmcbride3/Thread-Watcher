@@ -9,9 +9,9 @@ export function regMatch(str: string, reg: RegExp, inverted: boolean) {
 }
 
 export async function threadShouldBeWatched(auto: ChannelData, thread: ThreadChannel) {
-  auto.roles = auto.roles.filter((s) => !(s?.trim() == ""));
-  auto.tags = auto.tags.filter((s) => !(s?.trim() == ""));
-  const reg = auto.regex.length != 0 ? strToRegex(auto.regex) : false;
+  auto.roles = auto.roles.filter((s) => !(s?.trim() === ""));
+  auto.tags = auto.tags.filter((s) => !(s?.trim() === ""));
+  const reg = auto.regex.length !== 0 ? strToRegex(auto.regex) : false;
   let passes = true;
 
   if (thread.locked) return false;
@@ -54,11 +54,11 @@ export default {
   async execute(thread: ThreadChannel) {
     const channels = await db.getChannels(thread.guildId);
     const auto =
-      channels.find((t) => t.id == thread.parentId) ||
-      channels.find((t) => t.id == thread.parent?.parentId);
+      channels.find((t) => t.id === thread.parentId) ||
+      channels.find((t) => t.id === thread.parent?.parentId);
 
     // Return early if no auto rule is found for the thread's parent or grandparent
-    if (!auto) return;
+    if (!auto) return null;
 
     if (await threadShouldBeWatched(auto, thread)) {
       logger.info(`Automatically adding thread "${thread.id}" in ${thread.guildId}`);

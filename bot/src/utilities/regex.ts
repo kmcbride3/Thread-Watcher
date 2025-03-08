@@ -11,11 +11,20 @@ export function validRegex(r: string) {
 
 export function strToRegex(r: string) {
   let inverted = false;
-  if (r[0] === "!") {
+  let pattern = r;
+  if (pattern[0] === "!") {
     inverted = true;
-    r = r.replace("!", "");
+    pattern = pattern.replace("!", "");
   }
+  pattern = pattern.replace(/(\]|\[|\)|\()/g, "\\$1").replace(/\*{1,}/g, `[${quantifier}]*`);
+  return { inverted, regex: new RegExp(`^${pattern}$`, "gmu") };
+}
 
-  r = r.replace(/(\]|\[|\)|\()/g, "\\$1").replace(/\*{1,}/g, `[${quantifier}]*`);
-  return { inverted, regex: new RegExp(`^${r}$`, "gmu") };
+function escapeRegExp(string: string): string {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export function createPrefixRegex(prefix: string): RegExp {
+  const escapedPrefix = escapeRegExp(prefix);
+  return new RegExp(`^${escapedPrefix}\\s+`);
 }

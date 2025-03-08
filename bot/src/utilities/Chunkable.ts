@@ -20,8 +20,8 @@ export default class Chunkable<T> {
   }
 
   add(item: T | T[]) {
-    if (!(item instanceof Array)) item = [item];
-    this.inner.push(...item);
+    const itemArray = Array.isArray(item) ? item : [item];
+    this.inner.push(...itemArray);
   }
 
   getChunk(index: number): T[] {

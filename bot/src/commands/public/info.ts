@@ -20,7 +20,7 @@ const info: Command = {
       const getGuildCount = () => {
         return new Promise((resolve) => {
           interaction.client.shard?.fetchClientValues("guilds.cache.size").then((results) => {
-            if (!(results instanceof Array)) return;
+            if (!(results instanceof Array)) return null;
 
             let guildCount = 0;
             for (const item of results) {
@@ -55,7 +55,7 @@ const info: Command = {
             value: `To get help with this instance of thread-watcher you can join the [**support server**](${config.devServerInvite})`,
           },
         ],
-        ephermal: true,
+        flags: [MessageFlagsBitField.Flags.Ephemeral],
         noSend: true,
       });
       embeds.push(e);
@@ -80,7 +80,7 @@ const info: Command = {
               "Want to help keep Thread-Watcher free? You can find ways to donate [here](https://threadwatcher.xyz/donate)\nIf you cant donate (I get it) I'd very much appriciate an honest review on [top.gg](https://top.gg/bot/870715447136366662#reviews)",
           },
         ],
-        ephermal: true,
+        flags: [MessageFlagsBitField.Flags.Ephemeral],
         noSend: true,
       });
 

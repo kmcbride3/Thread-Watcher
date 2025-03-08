@@ -35,6 +35,7 @@ import { isShard, processState, ProcessRole, getShardId } from "./utilities/proc
 import { rateLimitManager } from "./utilities/rateLimitManager";
 import reloadCommands from "./utilities/routines/reloadCommands";
 import { Database } from "./interfaces/database";
+import { createShutdownManager, ShutdownPriority } from "./utilities/shutdown";
 
 const isShardProcess = isShard();
 
@@ -87,7 +88,7 @@ export { config };
 
 // Helper functions
 const destroyShards = () => {
-  if (shardsDestroyed) return;
+  if (shardsDestroyed) return null;
   shardsDestroyed = true;
   for (const shard of shards) {
     if (shard.process && !shard.process.killed) {
@@ -162,7 +163,7 @@ const webLog = async (
   const webhookClient = config.logWebhook
     ? new WebhookClient({ url: config.logWebhook as string })
     : null;
-  if (!webhookClient) return;
+  if (!webhookClient) return null;
   const embed = new EmbedBuilder().setTitle(title).setTimestamp(new Date()).setColor(colour);
   if (description) embed.setDescription(description);
   const logMessage = `${title}: ${description || ""}`;
@@ -268,14 +269,14 @@ export const initialize = async (): Promise<void> => {
     }
 
     // Set up process-specific signal handlers for shards
-    process.on("SIGINT", async () => {
+    process.on("SIGINT", () => {
       // Shards should wait for shutdown message from main
       logger.debug(
         `[${processState.role.toUpperCase()} ${processState.shardId}] Received SIGINT directly, waiting for main shutdown message`
       );
     });
 
-    process.on("SIGTERM", async () => {
+    process.on("SIGTERM", () => {
       // Shards should wait for shutdown message from main
       logger.debug(
         `[${processState.role.toUpperCase()} ${processState.shardId}] Received SIGTERM directly, waiting for main shutdown message`
@@ -436,48 +437,6 @@ export const initialize = async (): Promise<void> => {
     });
   });
 
-  // Handle shard disconnects using broadcastEval to listen to shard events
-  manager.on("shardCreate", (shard) => {
-    // Set up additional event listeners for the shard
-    shard.on("disconnect", (CloseEvent?: { code?: number }) => {
-      // Handle different disconnect codes properly
-      let reason = "Unknown";
-
-      // Get the code if available, otherwise default to 0
-      const code: number = (CloseEvent?.code as number) || 0;
-      switch (code) {
-        case 1000:
-          reason = "Normal closure";
-          break;
-        case 1001:
-          reason = "Going away";
-          break;
-        case 1006:
-          reason = "Abnormal closure";
-          break;
-        case 4004:
-          reason = "Authentication failed";
-          break;
-        case 4010:
-          reason = "Invalid shard";
-          break;
-        case 4011:
-          reason = "Sharding required";
-          break;
-        case 4013:
-          reason = "Invalid intents";
-          break;
-        case 4014:
-          reason = "Disallowed intents";
-          break;
-        default:
-          reason = `Code: ${code}`;
-      }
-
-      logger.warn(`Shard ${shard.id} disconnected: ${reason}`);
-    });
-  });
-
   logger.debug(
     `[${processState.role.toUpperCase()}] About to spawn shards with delay 7000ms and timeout 60000ms.`
   );
@@ -580,13 +539,54 @@ client.rest.on("rateLimited", (rateLimitInfo) => {
 });
 
 // Add a request interceptor to check for rate limits before making requests
-client.rest.on("request", (request) => {
+client.rest.on("request", async (request) => {
   const route = request.route;
   if (rateLimitManager.isRateLimited(route)) {
     const resetTime = rateLimitManager.getRateLimitedUntil(route);
     const retryAfter = resetTime ? resetTime - Date.now() : 0;
     safeLog("warn", `Request to ${route} is rate limited. Retrying after ${retryAfter}ms`);
-    return new Promise((resolve) => setTimeout(resolve, retryAfter)).then(() => request.make());
+    await new Promise((resolve) => setTimeout(resolve, retryAfter));
+    return request.make();
   }
   return request.make();
 });
+
+const shutdownManager = createShutdownManager(client);
+
+// Register any cleanup tasks with priorities
+shutdownManager.registerCleanupTask(
+  async () => {
+    // Close database connections
+    if (db && typeof db.close === "function") {
+      await db.close();
+      logger.info("Database connections closed");
+    }
+  },
+  {
+    name: "Database Cleanup",
+    priority: ShutdownPriority.HIGH,
+    timeout: 10000, // Give DB operations up to 10 seconds
+  }
+);
+
+shutdownManager.registerCleanupTask(
+  () => {
+    // Cleanup any temporary files
+    logger.info("Cleaning up temporary files");
+    // Add your temp file cleanup logic here
+    return Promise.resolve();
+  },
+  { name: "Temp Files Cleanup", priority: ShutdownPriority.NORMAL }
+);
+
+shutdownManager.registerCleanupTask(
+  () => {
+    // Save any unsaved analytics or metrics
+    logger.info("Saving analytics data");
+    // Add your analytics saving logic here
+    return Promise.resolve();
+  },
+  { name: "Analytics Persistence", priority: ShutdownPriority.LOW }
+);
+
+export { shutdownManager };

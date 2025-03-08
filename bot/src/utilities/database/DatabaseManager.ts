@@ -5,6 +5,7 @@ import { Database } from "../../interfaces/database";
 import Logger from "log75";
 import mysql from "./mysql";
 import sqlite from "./sqlite";
+import { shutdownManager } from "../../index";
 
 export enum DataBases {
   sqlite,
@@ -39,7 +40,8 @@ export function getDatabase(type: DataBases, config: ConfigFile, logger?: Logger
       } else {
         console.error(`Could not get a database implementation for "${DataBases[type]}"`);
       }
-      process.exit(1);
+      shutdownManager.shutdown(1, `Invalid database type: ${DataBases[type]}`);
+      throw new Error(`Invalid database type: ${DataBases[type]}`);
   }
 }
 
@@ -60,8 +62,10 @@ export function initializeDatabase(config: ConfigFile, logger?: Logger): Databas
 
 export function getBackupProvider(
   type: BackupProviders,
-  config: ConfigFile
+  config: ConfigFile,
+  logger?: Logger
 ): DiscordMessage | undefined {
-  if (type == BackupProviders.discord) return new DiscordMessage(config);
+  if (type === BackupProviders.discord && config.logWebhook !== "")
+    return new DiscordMessage(config, logger);
   return undefined;
 }

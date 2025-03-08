@@ -70,11 +70,11 @@ function ensureFile() {
   const j5FallBackExists = existsSync(P_FBJ5);
   const tsCnfExists = existsSync(P_TS);
 
-  if (j5CnfExists) return;
+  if (j5CnfExists) return null;
 
   if (!j5CnfExists && !j5FallBackExists && !tsCnfExists) {
     console.error(
-      "No config exists.\nCopy the contents of https://github.com/ffamilyfriendly/Thread-Watcher/blob/main/bot/_config.json5 into a file called \"config.json5\" in the bot folder."
+      'No config exists.\nCopy the contents of https://github.com/ffamilyfriendly/Thread-Watcher/blob/main/bot/_config.json5 into a file called "config.json5" in the bot folder.'
     );
     process.exit(1);
   }
@@ -82,13 +82,13 @@ function ensureFile() {
   if (tsCnfExists) {
     console.info("Old config found! Trying to parse...");
     parse();
-    return;
+    return null;
   }
 
   if (j5FallBackExists) {
     console.log("Moving config file:\n_config.json5 -> config.json5");
     renameSync(P_FBJ5, P_J5);
-    return;
+    return null;
   }
 }
 

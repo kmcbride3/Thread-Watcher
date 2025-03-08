@@ -21,11 +21,14 @@ const colour: ConfigValue = {
   default: "#197BBD",
 };
 
+const URL_REGEX =
+  /^https?:\/\/(?:www\.)?[-a-zA-Z0-9@:%._+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b(?:[-a-zA-Z0-9()@:%_+.~#?&//=]*)$/;
+
 const webhook: ConfigValue = {
   validate: (value) => {
     if (!value) return true;
     if (typeof value !== "string") return false;
-    return value.toString().startsWith("https://discord.com");
+    return URL_REGEX.test(value) && value.toString().startsWith("https://discord.com");
   },
   matchKeys: ["logWebhook"],
 };

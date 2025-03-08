@@ -1,25 +1,57 @@
-const API_BASE = "https://threadwatcher.xyz/api"
+const API_BASE = "https://threadwatcher.xyz/api";
 
 const searchShard = async() => {
+    const errElement = document.getElementById("search_error");
+    if (!errElement) return null;
 
-    const err = document.getElementById("search_error")
-    err.classList = "hide"
+    errElement.classList = "hide";
 
     const showError = (text, classList = "error") => {
-        err.classList = classList
-        err.innerHTML = text
+        if (errElement) {
+            errElement.classList = classList;
+            errElement.textContent = text;
+        }
+    };
+
+    const shardInput = document.getElementById("search_shard");
+    if (!shardInput) return null;
+    
+    const shard = shardInput.value;
+    
+    if(!shard || shard.length > 20 || shard.length < 17 || !/^\d+$/gi.test(shard)) {
+        return showError("Not a valid Discord guild ID");
     }
 
-    const shard = document.getElementById("search_shard").value
-    if(!shard || shard.length > 20 || shard.length < 17 || !shard.match(/^\d+$/gi)) return showError("Not a valid discord guild id")
-
-    const catchErr = (e) => {
-        showError(e)
+    try {
+        const response = await fetch(`${API_BASE}/getShard?guild=${encodeURIComponent(shard)}`);
+        if (!response.ok) {
+            throw new Error(`API error: ${response.status}`);
+        }
+        
+        const res = await response.json();
+        
+        if(res && !res.found) {
+            const message = document.createElement('div');
+            message.textContent = 'That guild does not use Thread-Watcher. ';
+            
+            const link = document.createElement('a');
+            link.href = 'https://threadwatcher.xyz/invite';
+            link.textContent = 'Click here to invite';
+            
+            message.appendChild(link);
+            
+            errElement.classList = "error";
+            errElement.innerHTML = '';
+            errElement.appendChild(message);
+            return null;
+        }
+        
+        showError(`Shard found! That guild is on shard ${res.shard}`, "success");
+    } catch (e) {
+        console.error("API error:", e);
+        showError("Failed to connect to API. Please try again later.");
     }
-    const res = await (await fetch(`${API_BASE}/getShard?guild=${shard}`).catch(catchErr)).json().catch(catchErr)
-    if(res && !res.found) return showError('That guild does not use Thread-Watcher. <a href="https://threadwatcher.xyz/invite">Click here to invite</a>')
-    showError(`Shard found! That guild is on shard <b>${res.shard}</b>`, "success")
-}
+};
 
 const icons = {
     "back": "m10.978 14.999v3.251c0 .412-.335.75-.752.75-.188 0-.375-.071-.518-.206-1.775-1.685-4.945-4.692-6.396-6.069-.2-.189-.312-.452-.312-.725 0-.274.112-.536.312-.725 1.451-1.377 4.621-4.385 6.396-6.068.143-.136.33-.207.518-.207.417 0 .752.337.752.75v3.251h9.02c.531 0 1.002.47 1.002 1v3.998c0 .53-.471 1-1.002 1z",
@@ -33,122 +65,140 @@ const icons = {
     "vote": "M5 22h-5v-12h5v12zm17.615-8.412c-.857-.115-.578-.734.031-.922.521-.16 1.354-.5 1.354-1.51 0-.672-.5-1.562-2.271-1.49-1.228.05-3.666-.198-4.979-.885.906-3.656.688-8.781-1.688-8.781-1.594 0-1.896 1.807-2.375 3.469-1.221 4.242-3.312 6.017-5.687 6.885v10.878c4.382.701 6.345 2.768 10.505 2.768 3.198 0 4.852-1.735 4.852-2.666 0-.335-.272-.573-.96-.626-.811-.062-.734-.812.031-.953 1.268-.234 1.826-.914 1.826-1.543 0-.529-.396-1.022-1.098-1.181-.837-.189-.664-.757.031-.812 1.133-.09 1.688-.764 1.688-1.41 0-.565-.424-1.109-1.26-1.221z"
 }
 
-const handleIcons = () => {
-    document.querySelectorAll("div[aria-type='icon']").forEach(icon => {
-        const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg")
-        svg.setAttribute("clip-rule", "evenodd")
-        svg.setAttribute("fill-rule", "evenodd")
-        svg.setAttribute("stroke-linejoin", "round")
-        svg.setAttribute("stroke-miterlimit", "2")
-        svg.setAttribute("viewBox", "0 0 24 24")
-        svg.setAttribute("xmlns", "http://www.w3.org/2000/svg")
-
-        const pathElement = document.createElementNS("http://www.w3.org/2000/svg", "path")
-        const iconName = icon.textContent ? icon.textContent : "back"
-        const path = icons[iconName]
-        pathElement.setAttribute("d", path)
-        pathElement.setAttribute("fill-rule", "nonzero")
-
-        svg.appendChild(pathElement)
-        icon.replaceChildren(svg)
-    })
-}
+// Add a utility function for safe logging
+const safeLog = (level, message, data = null) => {
+    const sanitizeObject = (obj) => {
+        if (typeof obj !== 'object' || obj === null) return obj;
+        
+        const sanitized = {};
+        for (const [key, value] of Object.entries(obj)) {
+            if (typeof value === 'object' && value !== null) {
+                sanitized[key] = sanitizeObject(value);
+            } else if (typeof value === 'string') {
+                sanitized[key] = value.length > 500 ? `${value.substring(0, 500)}...` : value;
+            } else {
+                sanitized[key] = value;
+            }
+        }
+        return sanitized;
+    };
+    
+    if (level === 'error') {
+        console.error(message, data ? sanitizeObject(data) : '');
+    } else if (level === 'warn') {
+        console.warn(message, data ? sanitizeObject(data) : '');
+    } else if (level === 'info') {
+        console.info(message, data ? sanitizeObject(data) : '');
+    } else {
+        console.log(message, data ? sanitizeObject(data) : '');
+    }
+};
 
 const handleStats = async () => {
-    const data = await (await fetch(`${API_BASE}/stats`)).json()
-    if(!data) return
+    try {
+        const response = await fetch(`${API_BASE}/stats`);
+        if (!response.ok) {
+            throw new Error(`API returned status ${response.status}`);
+        }
+        
+        const data = await response.json();
+        if (!data) return null;
 
-    // Proper logging for production
-    if (data.error) {
-        console.error("Error fetching stats:", data.error);
-    } else {
-        console.info("Stats fetched successfully");
+        if (data.error) {
+            safeLog('error', 'Error fetching stats:', { error: data.error });
+        } else {
+            safeLog('info', 'Stats fetched successfully');
+        }
+
+        const guildCount = document.getElementById("guilds_number")
+        const threadCount = document.getElementById("threads_number")
+        const votesCount = document.getElementById("votes_number")
+        guildCount.innerText = `${(data.guildCount / 1000).toFixed(1)}k`
+        threadCount.innerText = `${(data.threads / 1000).toFixed(1)}k`
+        votesCount.innerText = data.votes
+
+        const populateTable = () => {
+            const table = document.getElementById("shards_table")
+
+            /**
+             * 
+             * @param {Number} t 
+             */
+            const getUptimeText = (t) => {
+
+                const DAYS_DIV = t / 1000 / 60 / 60 / 24
+                const HOURS_DIV = t / 1000 / 60 / 60
+                const MINUTES_DIV = t / 1000 / 60
+                let str = ""
+
+                if(Math.floor(DAYS_DIV) !== 0) str = `${DAYS_DIV.toFixed(1)} days`
+                else if (Math.floor(HOURS_DIV) !== 0) str = `${HOURS_DIV.toFixed(1)} hours`
+                else str = `${MINUTES_DIV.toFixed(1)} minutes`
+
+                return str
+            }
+
+            /**
+             * 
+             * @param {Number} status 
+             */
+            const createWsStatus = (status) => {
+                const statuses = [
+                    'Ready',
+                    'Connecting',
+                    'Reconnecting',
+                    'Idle',
+                    'Nearly',
+                    'Disconnected',
+                    'WaitingForGuilds',
+                    'Identifying',
+                    'Resuming',
+                ]
+
+                return statuses[status] || "Unknown"
+            }
+
+            for(const shard of data.shards) {
+                const tr = document.createElement("tr")
+                const [ id, status, guildCount, uptime ] = [ document.createElement("td"),  document.createElement("td"), document.createElement("td"), document.createElement("td") ]
+                id.innerText = shard.id
+                status.innerHTML = createWsStatus(shard.status)
+                guildCount.innerText = shard.guilds
+                uptime.innerText = getUptimeText(shard.uptime)
+                tr.append(id, status, guildCount, uptime)
+                table.appendChild(tr)
+            }
+        }
+    
+        populateTable()
+    } catch (error) {
+        safeLog('error', 'Failed to fetch stats:', { message: error.message });
     }
-
-    const guildCount = document.getElementById("guilds_number")
-    const threadCount = document.getElementById("threads_number")
-    const votesCount = document.getElementById("votes_number")
-    guildCount.innerText = `${(data.guildCount / 1000).toFixed(1)}k`
-    threadCount.innerText = `${(data.threads / 1000).toFixed(1)}k`
-    votesCount.innerText = data.votes
-
-    const populateTable = () => {
-        const table = document.getElementById("shards_table")
-
-        /**
-         * 
-         * @param {Number} t 
-         */
-        const getUptimeText = (t) => {
-
-            const DAYS_DIV = t / 1000 / 60 / 60 / 24
-            const HOURS_DIV = t / 1000 / 60 / 60
-            const MINUTES_DIV = t / 1000 / 60
-            let str = ""
-
-            if(Math.floor(DAYS_DIV) !== 0) str = `${DAYS_DIV.toFixed(1)} days`
-            else if (Math.floor(HOURS_DIV) !== 0) str = `${HOURS_DIV.toFixed(1)} hours`
-            else str = `${MINUTES_DIV.toFixed(1)} minutes`
-
-            return str
-        }
-
-        /**
-         * 
-         * @param {Number} status 
-         */
-        const createWsStatus = (status) => {
-            const statuses = [
-                'Ready',
-                'Connecting',
-                'Reconnecting',
-                'Idle',
-                'Nearly',
-                'Disconnected',
-                'WaitingForGuilds',
-                'Identifying',
-                'Resuming',
-            ]
-
-            return statuses[status] || "Unknown"
-        }
-
-        for(const shard of data.shards) {
-            const tr = document.createElement("tr")
-            const [ id, status, guildCount, uptime ] = [ document.createElement("td"),  document.createElement("td"), document.createElement("td"), document.createElement("td") ]
-            id.innerText = shard.id
-            status.innerHTML = createWsStatus(shard.status)
-            guildCount.innerText = shard.guilds
-            uptime.innerText = getUptimeText(shard.uptime)
-            tr.append(id, status, guildCount, uptime)
-            table.appendChild(tr)
-        }
-    }
-   
-    populateTable()
 }
 
 const checkTestimonials = (el) => {
-    const isScrollable = el.scrollHeight > el.clientHeight
+    const isScrollable = el.scrollHeight > el.clientHeight;
 
     if(!isScrollable) {
-        console.log("not scrollable")
-        el.classList.remove("top-overflow", "bottom-overflow")
-        return
+        el.classList.remove("top-overflow", "bottom-overflow");
+        return null;
     }
 
     const isScrolledToBottom = el.scrollHeight <= el.clientHeight + el.scrollTop;
     const isScrolledToTop = isScrolledToBottom ? false : el.scrollTop === 0;
     el.classList.toggle('top-overflow', !isScrolledToBottom);
     el.classList.toggle('bottom-overflow', !isScrolledToTop);
-}
+};
 
 document.addEventListener("DOMContentLoaded", () => {
-    handleIcons()
-    handleStats()
-    checkTestimonials(document.querySelector(".testimonials"))
-    document.querySelector(".testimonials").addEventListener("scroll", (event) => {
-        console.log("yes")
-        checkTestimonials(event.currentTarget)
-    })
-})
+    handleIcons();
+    handleStats();
+    
+    const testimonials = document.querySelector(".testimonials");
+    if (testimonials) {
+        checkTestimonials(testimonials);
+        testimonials.addEventListener("scroll", (event) => {
+            checkTestimonials(event.currentTarget);
+        });
+    }
+});

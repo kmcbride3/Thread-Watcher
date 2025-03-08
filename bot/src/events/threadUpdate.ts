@@ -17,8 +17,8 @@ export default {
     try {
       // Check for auto-watch rules
       const auto =
-        (await db.getChannels(newThread.guildId)).find((t) => t.id == newThread.parentId) ||
-        (await db.getChannels(newThread.guildId)).find((t) => t.id == newThread.parent?.parentId);
+        (await db.getChannels(newThread.guildId)).find((t) => t.id === newThread.parentId) ||
+        (await db.getChannels(newThread.guildId)).find((t) => t.id === newThread.parent?.parentId);
 
       const watchedThreads = threadManager.getWatchedThreads();
 
@@ -60,14 +60,14 @@ export default {
       }
 
       // Handle thread maintenance for watched threads
-      if (!watchedThreads.has(newThread.id)) return;
+      if (!watchedThreads.has(newThread.id)) return null;
 
       // If thread is active (not archived/locked), update its due archive time
       if (!newThread.archived && !newThread.locked) {
         bumpAutoTime(newThread).catch((e) => {
           logger.error(`failed to bump thread with id ${newThread.id}: ${e}`);
         });
-        return;
+        return null;
       }
 
       // Handle special cases
@@ -76,10 +76,10 @@ export default {
         logger.warn(
           `Skipped "${newThread.id}" in "${newThread.guildId}" as it is not unarchivable`
         );
-        return;
+        return null;
       } else if (newThread.locked) {
         logger.warn(`Skipped "${newThread.id}" in "${newThread.guildId}" as it is locked`);
-        return;
+        return null;
       }
 
       /**

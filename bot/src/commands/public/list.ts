@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-empty-function */
 import {
   ChatInputCommandInteraction,
   PermissionFlagsBits,
@@ -48,11 +47,12 @@ const fitIntoFields = (
 
   const fields: field[] = [];
   let buff = "";
+  let currentLength = totalLength;
 
   for (const value of values) {
     // Length of the buffer plus the string currently added to it
     const iLength = buff.length + value.length + 2;
-    totalLength += value.length + 2;
+    currentLength += value.length + 2;
 
     /**
      * ensure the current thread can fit into the current field (buff).
@@ -74,7 +74,7 @@ const fitIntoFields = (
     value: buff.substring(0, buff.length - 2),
   });
 
-  return { fieldArr: fields, totalLength };
+  return { fieldArr: fields, totalLength: currentLength };
 };
 
 export function getDirectTag(
@@ -98,7 +98,7 @@ const getChannels = async (interaction: ChatInputCommandInteraction) => {
   const channels = await db.getChannels(interaction.guildId);
 
   for (const channelData of channels) {
-    const channel = await interaction.client.channels.fetch(channelData.id).catch(() => {});
+    const channel = await interaction.client.channels.fetch(channelData.id).catch(() => null);
     if (channel) {
       if (
         !(
@@ -132,10 +132,10 @@ const getThreads = async (interaction: ChatInputCommandInteraction) => {
 
   const threads = await db.getThreads(interaction.guildId);
   for (const _t of threads) {
-    const thread = await interaction.client.channels.fetch(_t.id).catch(() => {});
+    const thread = await interaction.client.channels.fetch(_t.id).catch(() => null);
     if (thread) {
       if (thread.type !== ChannelType.PrivateThread && thread.type !== ChannelType.PublicThread)
-        return;
+        return null;
       if (!interaction.memberPermissions?.has(PermissionFlagsBits.ViewChannel)) continue;
       if (!_t.watching) continue;
       // This is used instead of hotlinking ( <#ID> ) as discord shows un-cached threads as #deleted-channel if not in sidebar
@@ -165,7 +165,7 @@ const threads: Command = {
     });
 
     const res =
-      show == "channel"
+      show === "channel"
         ? await getChannels(interaction)
         : // This function will always return I_DataResponse.
           ((await getThreads(interaction)) as I_DataResponse);

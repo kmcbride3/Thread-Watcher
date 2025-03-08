@@ -35,7 +35,7 @@ export default async function loadCommands(
 
           if (!run || !data) {
             logger.warn(
-              `"${baseDir}${dirDive}${file}" is not an acceptable command file. Missing: ${run ? "" : "function \"run\""} ${data ? "" : "property \"data\""}`
+              `"${baseDir}${dirDive}${file}" is not an acceptable command file. Missing: ${run ? "" : 'function "run"'} ${data ? "" : 'property "data"'}`
             );
           } else {
             // Store command with all required properties

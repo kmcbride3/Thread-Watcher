@@ -2,12 +2,20 @@ import { statSync } from "fs";
 import { BackupProvider } from "../../../interfaces/database";
 import { WebhookClient } from "discord.js";
 import { ConfigFile } from "../../../utilities/cnf/index";
+import Logger from "log75";
 
 export default class DiscordMessage implements BackupProvider {
-  private webhookClient: WebhookClient;
+  private webhookClient!: WebhookClient;
 
-  constructor(config: ConfigFile) {
-    if (!config.logWebhook) throw new Error("no webhook url set!");
+  constructor(config: ConfigFile, logger?: Logger) {
+    if (!config.logWebhook) {
+      if (logger) {
+        logger.error("no webhook url set! skipping creation of webhook client");
+      } else {
+        console.error("no webhook url set! skipping creation of webhook client");
+      }
+      return;
+    }
     this.webhookClient = new WebhookClient({ url: config.logWebhook });
   }
 

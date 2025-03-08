@@ -1,21 +1,74 @@
 import Log75, { LogLevel } from "log75";
-import fs from "fs";
+import { appendFileSync, existsSync, mkdirSync, statSync, writeFileSync } from "fs";
 import path from "path";
 import { stripVTControlCharacters } from "util";
-import { appendFileSync, existsSync, mkdirSync } from "fs";
-import { join } from "path";
 import { trackInitState } from "./debugUtils";
+import { HexColorString } from "discord.js";
 
-const logDir = join(__dirname, "../../data");
-const logFile = join(logDir, "thread-watcher.log");
+const defaultStyles: Record<
+  "error" | "success" | "info" | "warning" | "debug" | "trace",
+  { colour: string }
+> = {
+  error: { colour: "#FF0000" },
+  success: { colour: "#00FF00" },
+  info: { colour: "#0000FF" },
+  warning: { colour: "#FFA500" },
+  debug: { colour: "#808080" },
+  trace: { colour: "#808080" },
+};
+
+function isValidHexColour(value: string): value is HexColorString {
+  return typeof value === "string" && /^#[0-9A-Fa-f]{6}$/.test(value);
+}
+
+function getLogStyle(type: "error" | "success" | "info" | "warning" | "debug" | "trace") {
+  const resolvedType = type;
+  let style;
+  switch (resolvedType) {
+    case "error":
+      style = configSettings?.style?.error;
+      if (!style || !isValidHexColour(style.colour)) {
+        style = defaultStyles.error;
+      }
+      break;
+    case "success":
+      style = configSettings?.style?.success;
+      if (!style || !isValidHexColour(style.colour)) {
+        style = defaultStyles.success;
+      }
+      break;
+    case "info":
+      style = configSettings?.style?.info;
+      if (!style || !isValidHexColour(style.colour)) {
+        style = defaultStyles.info;
+      }
+      break;
+    case "warning":
+      style = configSettings?.style?.warning;
+      if (!style || !isValidHexColour(style.colour)) {
+        style = defaultStyles.warning;
+      }
+      break;
+    default:
+      style = defaultStyles.info;
+      break;
+  }
+  return style;
+}
+
+function hexToAnsiColorFn(hexColor: string): (text: string) => string {
+  const hex = hexColor.startsWith("#") ? hexColor.slice(1) : hexColor;
+  const r = parseInt(hex.substring(0, 2), 16);
+  const g = parseInt(hex.substring(2, 4), 16);
+  const b = parseInt(hex.substring(4, 6), 16);
+  return (text: string) => `\x1b[38;2;${r};${g};${b}m${text}\x1b[0m`;
+}
+
+const logDir = path.join(__dirname, "../../data");
+const logFile = path.join(logDir, "thread-watcher.log");
 const logFilePath = path.join(__dirname, "../../data/thread-watcher.log");
 
-let configSettings: {
-  logLevel: string;
-  logBold: boolean;
-  logInverted: boolean;
-  logToFile: boolean;
-};
+let configSettings: LoggerOptions;
 
 export class Log76 extends Log75 {
   constructor(
@@ -32,42 +85,54 @@ export class Log76 extends Log75 {
 
   async error(s: string) {
     if (LogLevel.Standard <= logLevel) {
-      super.error(s);
+      const style = getLogStyle("error");
+      const colorFn = hexToAnsiColorFn(style.colour);
+      super.print(s, "ERROR", colorFn, console.error);
       if (configSettings?.logToFile) await logToFile(`[ERROR] ${s}`);
     }
   }
 
   async warn(s: string) {
     if (LogLevel.Standard <= logLevel) {
-      super.warn(s);
-      if (configSettings?.logToFile) await logToFile(`[WARN]  ${s}`);
+      const style = getLogStyle("warning");
+      const colorFn = hexToAnsiColorFn(style.colour);
+      super.print(s, "WARN", colorFn, console.warn);
+      if (configSettings?.logToFile) await logToFile(`[WARN] ${s}`);
     }
   }
 
   async done(s: string) {
     if (LogLevel.Standard <= logLevel) {
-      super.done(s);
-      if (configSettings?.logToFile) await logToFile(`[OK]    ${s}`);
+      const style = getLogStyle("success");
+      const colorFn = hexToAnsiColorFn(style.colour);
+      super.print(s, "OK", colorFn, console.log);
+      if (configSettings?.logToFile) await logToFile(`[OK] ${s}`);
     }
   }
 
   async info(s: string) {
     if (LogLevel.Standard <= logLevel) {
-      super.info(s);
-      if (configSettings?.logToFile) await logToFile(`[INFO]  ${s}`);
+      const style = getLogStyle("info");
+      const colorFn = hexToAnsiColorFn(style.colour);
+      super.print(s, "INFO", colorFn, console.info);
+      if (configSettings?.logToFile) await logToFile(`[INFO] ${s}`);
     }
   }
 
   async debug(s: string) {
     if (LogLevel.Debug <= logLevel) {
-      super.debug(s);
+      const style = getLogStyle("debug");
+      const colorFn = hexToAnsiColorFn(style.colour);
+      super.print(s, "DEBUG", colorFn, console.debug);
       if (configSettings?.logToFile) await logToFile(`[DEBUG] ${s}`);
     }
   }
 
   async trace(s: string) {
     if (LogLevel.Trace <= logLevel) {
-      super.trace(s);
+      const style = getLogStyle("trace");
+      const colorFn = hexToAnsiColorFn(style.colour);
+      super.print(s, "TRACE", colorFn, console.trace);
       if (configSettings?.logToFile) {
         await logToFile(`[TRACE] ${s}`);
         trackInitState(s);
@@ -79,7 +144,6 @@ export class Log76 extends Log75 {
 let logLevel: number;
 export let logger: Log76;
 
-// Ensure logger is only initialized once
 let loggerInitialized = false;
 
 export interface LoggerOptions {
@@ -87,7 +151,10 @@ export interface LoggerOptions {
   logBold?: boolean;
   logInverted?: boolean;
   logToFile?: boolean;
-  silent?: boolean; // Add this option
+  silent?: boolean;
+  style?: Partial<
+    Record<"error" | "success" | "info" | "warning" | "debug" | "trace", { colour: HexColorString }>
+  >;
 }
 
 export const initLogger = (options: LoggerOptions = {}): void => {
@@ -97,29 +164,18 @@ export const initLogger = (options: LoggerOptions = {}): void => {
   }
   loggerInitialized = true;
 
-  // Only show initialization message if not silent
   if (!options.silent) {
     console.info(`Initializing logger in process ${process.pid}`);
   }
-
-  // Store the config from index.ts here
-  configSettings = options as {
-    logLevel: string;
-    logBold: boolean;
-    logInverted: boolean;
-    logToFile: boolean;
-  };
-  // Using Log75's built-in levels and mapping our config log level.
+  configSettings = options;
   const envLogLevel = process.env.LOG_LEVEL || "Standard";
   logLevel = LogLevel[envLogLevel as keyof typeof LogLevel] ?? LogLevel.Standard;
-  // Pass the additional options 'bold' and 'inverted' to the constructor:
   logger = new Log76(logLevel, {
     color: true,
     bold: options.logBold ?? false,
     inverted: options.logInverted ?? false,
     maxTypeLength: 5,
   });
-
   logger.debug(`Logger initialized with Log level set to ${envLogLevel} (${logLevel}).`);
 };
 
@@ -133,14 +189,14 @@ export const ensureLogDirectoryExists = () => {
 export const initLogFile = () => {
   ensureLogDirectoryExists();
   try {
-    const stats = fs.statSync(logFilePath);
+    const stats = statSync(logFilePath);
     if (stats.isDirectory()) {
-      fs.renameSync(logFilePath, logFilePath + ".old");
-      fs.writeFileSync(logFilePath, "", { mode: 0o666 });
+      writeFileSync(logFilePath + ".old", "");
+      writeFileSync(logFilePath, "", { mode: 0o666 });
     }
   } catch (e: unknown) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") {
-      fs.writeFileSync(logFilePath, "", { mode: 0o666 });
+      writeFileSync(logFilePath, "", { mode: 0o666 });
     } else {
       throw e;
     }

@@ -31,9 +31,8 @@ export default class TwModal implements TwGenericComponent<ModalSubmitInteractio
   public filter?: modalFilter;
 
   constructor(label: string) {
-    // There is a chance that an id collision can happen but its very VERY slight
-    // esp as the button only exists temporarily
-    this.id = `${Math.floor(Math.random() * 10_000_000)}`;
+    // Replace Math.random with a more secure ID generation method
+    this.id = `mdl_${Date.now()}_${crypto.randomUUID().slice(0, 8)}`;
 
     this.modal = new ModalBuilder().setTitle(label).setCustomId(this.id);
   }
@@ -50,9 +49,12 @@ export default class TwModal implements TwGenericComponent<ModalSubmitInteractio
   public middleware(interaction: ModalSubmitInteraction): void {
     if (this.filter && this.callback && this.filter(interaction)) {
       this.callback(interaction);
+    } else if (this.callback) {
+      this.callback(interaction);
     } else {
       interaction.reply({
-        content: "Nuh uh <:statusurgent:960959148848214017>",
+        content:
+          "<:statusurgent:960959148848214017> This form is no longer valid or you don't have permission to submit it.",
         flags: [MessageFlagsBitField.Flags.Ephemeral],
       });
     }

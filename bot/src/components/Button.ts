@@ -37,14 +37,13 @@ export default class TwButton implements TwGenericComponent<ButtonInteraction> {
       url?: string;
     }
   ) {
-    // There is a chance that an id collision can happen but its very VERY slight
-    // esp as the button only exists temporarily
-    this.id = `${Math.floor(Math.random() * 10_000_000)}`;
+    // Replace Math.random with a more secure ID generation method
+    this.id = `btn_${Date.now()}_${crypto.randomUUID().slice(0, 8)}`;
 
     this.button = new ButtonBuilder().setLabel(label).setStyle(style).setCustomId(this.id);
 
     if (!misc) return;
-    if (typeof misc.disabled != "undefined") this.button.setDisabled(misc.disabled);
+    if (typeof misc.disabled !== "undefined") this.button.setDisabled(misc.disabled);
     if (misc.emoji) this.button.setEmoji(misc.emoji);
     if (misc.url) this.button.setURL(misc.url);
   }
@@ -52,9 +51,12 @@ export default class TwButton implements TwGenericComponent<ButtonInteraction> {
   public middleware(interaction: ButtonInteraction): void {
     if (this.filter && this.callback && this.filter(interaction)) {
       this.callback(interaction);
+    } else if (this.callback) {
+      this.callback(interaction);
     } else {
       interaction.reply({
-        content: "Nuh uh <:statusurgent:960959148848214017>",
+        content:
+          " <:statusurgent:960959148848214017> This button is no longer valid or you don't have permission to use it.",
         flags: [MessageFlagsBitField.Flags.Ephemeral],
       });
     }

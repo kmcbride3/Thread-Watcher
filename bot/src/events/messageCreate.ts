@@ -7,8 +7,9 @@ export default {
   name: Events.MessageCreate,
   once: false,
   execute(message: Message) {
-    if (message.author.bot) return;
-    if (!message.channel || !message.channel.isThread() || !threads.has(message.channelId)) return;
+    if (message.author.bot) return null;
+    if (!message.channel || !message.channel.isThread() || !threads.has(message.channelId))
+      return null;
     bumpAutoTime(message.channel).catch((e) => {
       logger.error(`failed to bump thread with id ${message.channelId}: ${e}`);
     });

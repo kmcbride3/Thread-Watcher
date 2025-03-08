@@ -9,8 +9,7 @@ import {
 import { WatchedThread } from "../interfaces/thread";
 import { getRestClient } from "./discordRest";
 import { rateLimitManager } from "./rateLimitManager";
-import { logger } from "../index";
-import { db } from "../index"; // Import db directly
+import { logger, db } from "../index";
 
 /**
  * Manages thread watching and unarchiving operations
@@ -215,7 +214,7 @@ export class ThreadManager {
 
       await Promise.all(
         batch.map(async ([id, threadData]) => {
-          if (!threadData.watching) return;
+          if (!threadData.watching) return null;
 
           // If thread is due for archiving soon (next 5 minutes), unarchive it
           if (threadData.dueArchive && threadData.dueArchive < now + 300000) {

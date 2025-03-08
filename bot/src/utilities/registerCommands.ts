@@ -33,14 +33,23 @@ export async function registerCommands(global: boolean, config: ConfigFile): Pro
 
     if (!global && !config.devServer) {
       logger.error("Local registration requested but no dev server configured in config.");
-      return Promise.reject("No dev server specified in config");
+      return Promise.reject(new Error("No dev server specified in config"));
     }
 
     const rest = new REST({ version: "10" }).setToken(config.tokens.discord);
 
     const commandToJson = (cmd: Command) => {
       const data = cmd.data.toJSON();
-      if (cmd.externalOptions) data.options?.push(...cmd.externalOptions);
+      if (cmd.externalOptions)
+        data.options?.push(
+          ...(cmd.externalOptions as {
+            name: string;
+            description: string;
+            type: number;
+            required?: boolean;
+            options?: unknown[];
+          }[])
+        );
       return data;
     };
 

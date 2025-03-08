@@ -7,7 +7,7 @@ import { Database } from "../../interfaces/database";
 import { Log76 } from "../logger";
 
 export default function scheduleBackups(database: Database, logger: Log76) {
-  if (!config.database.backupInterval) return;
+  if (!config.database.backupInterval) return null;
   const backupsDirPath = join(config.database.options.dataLocation, "./backups");
 
   if (!existsSync(backupsDirPath)) {
@@ -25,7 +25,7 @@ export default function scheduleBackups(database: Database, logger: Log76) {
         let backupLocation = "";
 
         try {
-          if (config.database.backupProvider != "none") {
+          if (config.database.backupProvider !== "none") {
             const provider = getBackupProvider(
               BackupProviders[config.database.backupProvider],
               config

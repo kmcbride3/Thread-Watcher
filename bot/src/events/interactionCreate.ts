@@ -7,15 +7,22 @@ import {
   Events,
   Interaction,
   MessageFlagsBitField,
+  ActionRowBuilder,
+  MessageActionRowComponentBuilder,
 } from "discord.js";
 import { config, logger } from "../index";
 import { commands } from "../bot";
-import { Command } from "../interfaces/command";
-import { BuildBaseEmbedFunction, statusType, baseEmbedOptions } from "../interfaces/command";
+import {
+  Command,
+  BuildBaseEmbedFunction,
+  statusType,
+  baseEmbedOptions,
+} from "../interfaces/command";
 import { ButtonInteractionQueue } from "../components/Button";
 import { ModalInteractionQueue } from "../components/Modal";
 import { StringSelectInteractionQueue } from "../components/StringSelect";
 import TwGenericComponent from "../interfaces/genericComponent";
+import { safeObjectAccess } from "../utilities/securityExceptions";
 
 /**
  * Creates a styled embed for command responses
@@ -25,15 +32,37 @@ const buildBaseEmbed: BuildBaseEmbedFunction = (
   status: statusType = statusType.info,
   misc?: baseEmbedOptions
 ): EmbedBuilder => {
-  const style = config.style[status];
+  // Create a local copy of status instead of modifying the parameter
+  const effectiveStatus = Object.values(statusType).includes(status) ? status : statusType.info;
+
+  // Use safeObjectAccess to prevent object injection
+  const style = safeObjectAccess(
+    config.style,
+    effectiveStatus,
+    Object.values(statusType).map((s) => s.toString())
+  ) as { colour: string; emoji: string };
+
   const embed = new EmbedBuilder()
     .setColor(style.colour as ColorResolvable)
     .setTitle(`${style.emoji} ${title}`);
 
   if (misc?.description) embed.setDescription(misc.description);
   if (misc?.color) embed.setColor(misc.color);
-  if (misc?.fields) embed.addFields(...misc.fields);
-  if (!misc?.ephermal) embed.setTimestamp();
+  if (misc?.fields) {
+    const processedFields = misc.fields.map((field) => ({
+      name: field.name,
+      value: String(field.value),
+      inline: field.inline,
+    }));
+    embed.addFields(processedFields);
+  }
+
+  if (
+    !misc?.flags ||
+    !(typeof misc.flags === "number" && misc.flags & MessageFlagsBitField.Flags.Ephemeral)
+  ) {
+    embed.setTimestamp();
+  }
 
   return embed;
 };
@@ -54,17 +83,24 @@ const sendResponse = async (
       });
     }
 
-    // Create response options with ephemeral property (simpler approach)
-    const responseOptions = {
+    const responseOptions: {
+      embeds: EmbedBuilder[];
+      components: ActionRowBuilder<MessageActionRowComponentBuilder>[];
+      flags?: number;
+    } = {
       embeds: [embed],
-      components: [...(options?.components || [])],
-      ephemeral: true,
+      components: options?.components || [],
+      flags: options?.flags ? new MessageFlagsBitField(options.flags).valueOf() : undefined,
     };
 
     if (interaction.replied || interaction.deferred) {
-      await interaction.editReply(responseOptions);
+      await interaction.editReply(responseOptions).catch((error) => {
+        logger.error(`Failed to edit reply: ${error}`);
+      });
     } else {
-      await interaction.reply(responseOptions);
+      await interaction.reply(responseOptions).catch((error) => {
+        logger.error(`Failed to send reply: ${error}`);
+      });
     }
   } catch (err) {
     logger.error("sendResponse failed");
@@ -93,15 +129,27 @@ If this error persists, please report it ${
     }.
 `;
 
-    const errorOptions = {
-      content: `There was an error executing this command!\n${errDetails}`,
-      ephemeral: true, // Changed from flags to ephemeral property
-    };
+    const errorContent = `There was an error executing this command!\n${errDetails}`;
 
     if (interaction.replied || interaction.deferred) {
-      interaction.editReply(errorOptions).catch(console.error);
+      interaction
+        .editReply({
+          content: errorContent,
+          components: [],
+          embeds: [],
+        })
+        .catch((error) => {
+          logger.error(`Failed to edit reply with error message: ${error}`);
+        });
     } else {
-      interaction.reply(errorOptions).catch(console.error);
+      interaction
+        .reply({
+          content: errorContent,
+          flags: [MessageFlagsBitField.Flags.Ephemeral],
+        })
+        .catch((error) => {
+          logger.error(`Failed to send error reply: ${error}`);
+        });
     }
   } catch (replyError) {
     logger.error(`Failed to send error response: ${replyError}`);
@@ -123,7 +171,7 @@ function validateGatekeeping(
   if (gatekeeping.ownerOnly && !config.owners.includes(interaction.user.id)) {
     return buildBaseEmbed("Owner Only", statusType.error, {
       description: `Command \`${interaction.commandName}\` is restricted to owner${config.owners.length > 1 ? "s" : ""}.`,
-      ephermal: true,
+      flags: [MessageFlagsBitField.Flags.Ephemeral],
     });
   }
 
@@ -136,7 +184,7 @@ function validateGatekeeping(
   ) {
     return buildBaseEmbed("Dev Server Only", statusType.error, {
       description: `Command \`${interaction.commandName}\` can only be used in the development server.`,
-      ephermal: true,
+      flags: [MessageFlagsBitField.Flags.Ephemeral],
     });
   }
 
@@ -154,7 +202,7 @@ function validateGatekeeping(
           value: `${missing?.map((m) => `\`${m}\``).join(", ") || "None"}`,
         },
       ],
-      ephermal: true,
+      flags: [MessageFlagsBitField.Flags.Ephemeral],
     });
   }
 
@@ -169,7 +217,7 @@ function validateGatekeeping(
           value: `${missing?.map((m) => `\`${m}\``).join(", ") || "None"}`,
         },
       ],
-      ephermal: true,
+      flags: [MessageFlagsBitField.Flags.Ephemeral],
     });
   }
 
@@ -219,10 +267,14 @@ export default {
       // Handle unknown commands
       if (!command) {
         if (interaction.isRepliable()) {
-          await interaction.reply({
-            content: `Command \`${interaction.commandName}\` not found.`,
-            flags: [MessageFlagsBitField.Flags.Ephemeral],
-          });
+          await interaction
+            .reply({
+              content: `Command \`${interaction.commandName}\` not found.`,
+              flags: [MessageFlagsBitField.Flags.Ephemeral],
+            })
+            .catch((error) => {
+              logger.error(`Failed to reply to unknown command: ${error}`);
+            });
         }
         return;
       }
@@ -236,7 +288,7 @@ export default {
               "Your interaction happened in an unknown channel.\n" +
               "**If this is a DM:** run it in a server. Thread-Watcher does not support DMs\n" +
               "**If this is not a DM:** something went wrong. Try again later.",
-            ephermal: true,
+            flags: [MessageFlagsBitField.Flags.Ephemeral],
           })
         );
         return;
@@ -274,10 +326,14 @@ export default {
           });
         } else {
           logger.error(`Command ${interaction.commandName} has neither run nor execute methods`);
-          await interaction.reply({
-            content: "There was an error with this command implementation!",
-            flags: [MessageFlagsBitField.Flags.Ephemeral],
-          });
+          await interaction
+            .reply({
+              content: "There was an error with this command implementation!",
+              flags: [MessageFlagsBitField.Flags.Ephemeral],
+            })
+            .catch((error) => {
+              logger.error(`Failed to send implementation error: ${error}`);
+            });
         }
       } catch (error) {
         logger.error(`Unhandled error in command ${interaction.commandName}: ${error}`);

@@ -70,7 +70,7 @@ class sqlite implements Database {
       const res = this.db
         .prepare("SELECT * FROM config WHERE server = ? AND cfg_id = ?")
         .get(server, key) as { server: string; cfg_id: string; value: string };
-      if (!res) return reject("NO ROW FOUND");
+      if (!res) return reject(new Error("NO ROW FOUND"));
       resolve(res.value);
     });
   }

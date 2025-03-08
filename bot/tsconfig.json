@@ -1,11 +1,14 @@
 {
+  "_meta": {
+    "description": "TypeScript configuration for thread-watcher bot"
+  },
   "compilerOptions": {
     "target": "ESNext",
-    "module": "commonjs",
+    "module": "CommonJS", // More compatible with Node.js
     "rootDir": "./src/",
     "outDir": "./dist/",
     "strict": true,
-    "moduleResolution": "node",
+    "moduleResolution": "node", // Must match module setting
     "importHelpers": true,
     "experimentalDecorators": true,
     "esModuleInterop": true,
@@ -14,11 +17,12 @@
     "resolveJsonModule": true,
     "forceConsistentCasingInFileNames": true,
     "removeComments": true,
-    "typeRoots": ["node_modules/@types"],
+    "typeRoots": ["./node_modules/@types", "./src/types"],
+    "types": ["node"],
     "sourceMap": false,
     "baseUrl": "./"
   },
   "files": ["src/index.ts", "src/bot.ts"],
-  "include": ["./**/*.ts"],
-  "exclude": ["**/node_modules", "dist"]
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
 }

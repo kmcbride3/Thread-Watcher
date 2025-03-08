@@ -8,6 +8,7 @@ import {
   AutocompleteInteraction,
   ActionRowBuilder,
   SlashCommandOptionsOnlyBuilder,
+  MessageActionRowComponentBuilder,
 } from "discord.js";
 
 export enum statusType {
@@ -17,14 +18,19 @@ export enum statusType {
   warning = "warning",
 }
 
+export interface builderField<T = unknown> {
+  name: string;
+  value: T | string;
+  inline?: boolean;
+}
+
 export interface baseEmbedOptions {
   description?: string;
   color?: ColorResolvable;
-  fields?: { name: string; value: string }[];
-  ephermal?: boolean;
+  fields?: { name: string; value: string | number; inline?: boolean }[];
+  flags?: number[];
   showAuthor?: boolean;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  components?: ActionRowBuilder<any>[];
+  components?: ActionRowBuilder<MessageActionRowComponentBuilder>[];
   noSend?: boolean;
 }
 
@@ -48,8 +54,7 @@ export interface Command {
     | SlashCommandSubcommandsOnlyBuilder
     | SlashCommandOptionsOnlyBuilder;
   gatekeeping?: Gatekeeping;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  externalOptions?: any[];
+  externalOptions?: unknown[];
   run: (
     interaction: ChatInputCommandInteraction,
     buildBaseEmbed: (title: string, status: statusType, misc?: baseEmbedOptions) => EmbedBuilder

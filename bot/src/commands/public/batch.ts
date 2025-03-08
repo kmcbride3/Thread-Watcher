@@ -21,8 +21,9 @@ import {
   AnySelectMenuInteraction,
   ButtonBuilder,
   MessageFlagsBitField,
+  CacheType,
 } from "discord.js";
-import { Command, statusType } from "../../interfaces/command";
+import { Command, statusType, baseEmbedOptions } from "../../interfaces/command";
 import { db } from "../../index";
 import { threads as threadsList } from "../../bot";
 import { threadShouldBeWatched } from "../../events/threadCreate";
@@ -53,8 +54,6 @@ const getThreads = async function (channel: threadContainers): Promise<ThreadCha
   const threads: ThreadChannel[] = [];
   const promises: Promise<FetchedThreads | FetchedThreadsMore>[] = [];
 
-  if (!channel.viewable) throw Error("can not view channel");
-
   // Fetch all the active threads for the channel
   promises.push(channel.threads.fetchActive());
 
@@ -72,7 +71,7 @@ const getThreads = async function (channel: threadContainers): Promise<ThreadCha
   // for some reason this needs to be done as ALL threads in the server are returned???
   // I've no clue why as docs specify that channel.threads.fetch<Active|Archived>() only returns threads of that channel
   for (const resolved of resolvedThreads)
-    threads.push(...resolved.threads.filter((t) => t.parentId == channel.id).values());
+    threads.push(...resolved.threads.filter((t) => t.parentId === channel.id).values());
 
   return threads;
 };
@@ -166,15 +165,31 @@ const getDirThreads = async (dir: CategoryChannel): Promise<ThreadChannel[]> => 
 
   return threads;
 };
+type BuildBaseEmbedFunction = (
+  title: string,
+  status: statusType,
+  misc?: baseEmbedOptions
+) => EmbedBuilder;
 
 const batch: Command = {
-  run: async (interaction: ChatInputCommandInteraction, buildBaseEmbed) => {
+  run: async (
+    interaction: ChatInputCommandInteraction<CacheType>,
+    buildBaseEmbed: BuildBaseEmbedFunction
+  ): Promise<void> => {
     await interaction.deferReply({
       flags: [MessageFlagsBitField.Flags.Ephemeral],
     });
     const parent = interaction.options.getChannel("parent") || interaction.channel;
-    const advanced = interaction.options.getBoolean("advanced");
-    const watchNew = interaction.options.getBoolean("watch-new");
+    if (!parent) {
+      const embed = buildBaseEmbed("Error", statusType.error, {
+        description: "Parent channel not found.",
+      });
+      await interaction.editReply({ embeds: [embed] });
+      return;
+    }
+
+    const advanced: boolean | null = interaction.options.getBoolean("advanced");
+    const watchNew: boolean | null = interaction.options.getBoolean("watch-new");
     let action: actionType = "inaction";
     const embeds: EmbedBuilder[] = [];
 
@@ -192,7 +207,7 @@ const batch: Command = {
         action = "inaction";
     }
 
-    const buildActionList = (actions: actionsList) => {
+    const buildActionList: (actions: actionsList) => string = (actions: actionsList): string => {
       let rv = "";
 
       if (actions.added.length !== 0) rv += `**Threads watched:** \`${actions.added.length}\`\n`;
@@ -201,14 +216,14 @@ const batch: Command = {
       if (actions.noAction.length !== 0)
         rv += `**Threads not affected:** \`${actions.noAction.length}\`\n`;
 
-      if (rv == "") rv = "**found no threads**";
+      if (rv === "") rv = "**found no threads**";
 
       return rv;
     };
 
     // This sometimes fails? Idk why
-    const sendResultsEmbed = (actions: actionsList) => {
-      const resultEmbed = buildBaseEmbed("Done", statusType.success, {
+    const sendResultsEmbed: (actions: actionsList) => void = (actions: actionsList): void => {
+      const resultEmbed: EmbedBuilder = buildBaseEmbed("Done", statusType.success, {
         noSend: true,
         description: `new threads created in <#${parent?.id}> ${watchNew ? "will" : "will not"} be watched\n-# **Keep in mind:** it might take upwards of an hour for the bot to ressurect any threads watched`,
         fields: [
@@ -224,51 +239,65 @@ const batch: Command = {
       interaction.editReply({ embeds, components: [] });
     };
 
-    const buttonFilter = (int: ButtonInteraction) => int.user.id === interaction.user.id;
+    const buttonFilter: (int: ButtonInteraction) => boolean = (int: ButtonInteraction): boolean =>
+      int.user.id === interaction.user.id;
 
-    if (
-      !(
-        parent instanceof TextChannel ||
-        parent instanceof NewsChannel ||
-        parent instanceof ForumChannel ||
-        parent instanceof CategoryChannel
-      )
-    ) {
-      const embed = buildBaseEmbed("Wrong Channel Type", statusType.error, {
-        description: `<#${parent?.id}> is not a valid channel for this command`,
+    if (!interaction.inGuild() || !interaction.guild) {
+      const embed = buildBaseEmbed("Guild Only", statusType.error, {
+        description: "This command must be run in a server.",
       });
-      interaction.reply({
-        embeds: [embed],
-        flags: [MessageFlagsBitField.Flags.Ephemeral],
-      });
+      await interaction.editReply({ embeds: [embed] });
       return;
     }
 
-    if (!parent.viewable) {
-      const embed = buildBaseEmbed("Cannot view channel", statusType.error, {
-        description: `Thread-Watcher cannot see <#${parent.id}>. Make sure the bot has the \`View Channel\` permission in the channel.`,
-      });
-      interaction.reply({
-        embeds: [embed],
-        flags: [MessageFlagsBitField.Flags.Ephemeral],
-      });
-      return;
+    const guild = interaction.guild;
+    const botMember = await guild.members.fetchMe();
+    const targetChannel = parent as TextChannel | NewsChannel | ForumChannel | CategoryChannel;
+
+    if (targetChannel instanceof CategoryChannel) {
+      if (!targetChannel.permissionsFor(botMember)?.has(PermissionFlagsBits.ViewChannel)) {
+        const embed = buildBaseEmbed("Insufficient Permissions", statusType.error, {
+          description: `Bot requires "View Channel" permission on <#${targetChannel.id}>.`,
+        });
+        await interaction.editReply({ embeds: [embed] });
+        return;
+      }
+    } else {
+      const canView = targetChannel.permissionsFor(botMember)?.has(PermissionFlagsBits.ViewChannel);
+      const canManageThreads = targetChannel
+        .permissionsFor(botMember)
+        ?.has(PermissionFlagsBits.ManageThreads);
+      if (!canView || !canManageThreads) {
+        const embed = buildBaseEmbed("Insufficient Permissions", statusType.error, {
+          description: `Bot requires both "View Channel" and "Manage Threads" permissions on <#${targetChannel.id}>.`,
+        });
+        await interaction.editReply({ embeds: [embed] });
+        return;
+      }
     }
 
     if (!action || !interaction.guildId) {
-      const embed = buildBaseEmbed("Rare Easter Egg", statusType.warning, {
+      const embed: EmbedBuilder = buildBaseEmbed("Rare Easter Egg", statusType.warning, {
         description:
           "Congrats! 🎉\nThis error should be impossible to get but you got it anyhow you silly little sausage.",
       });
-      interaction.reply({ embeds: [embed] });
+      await interaction.editReply({ embeds: [embed] });
       return;
     }
 
     const threads: ThreadChannel[] = [];
 
     // put all the affected threads into a flat array
-    if (parent instanceof CategoryChannel) threads.push(...(await getDirThreads(parent)));
-    else threads.push(...(await getThreads(parent)));
+    if (parent instanceof CategoryChannel) {
+      threads.push(...(await getDirThreads(parent)));
+    } else if (
+      parent instanceof TextChannel ||
+      parent instanceof NewsChannel ||
+      parent instanceof ForumChannel ||
+      parent instanceof MediaChannel
+    ) {
+      threads.push(...(await getThreads(parent)));
+    }
 
     // put all the roles into a chunkable (such a good class wow must have been a genious who made that)
     const roles = Chunkable.from(Array.from(interaction.guild?.roles.cache.values() ?? []));
@@ -332,12 +361,12 @@ const batch: Command = {
         interaction.editReply({ embeds: [filterEmbed], components });
 
         if (!i.replied) {
-          i.update("asdasd");
+          i.update({ content: "Choice saved" });
         }
       };
 
       const tagsSelect = () => {
-        if (!(parent instanceof ForumChannel)) return;
+        if (!(parent instanceof ForumChannel)) return null;
         const select = new TwStringSelect();
         select.select
           .setPlaceholder("select tags!")
@@ -369,7 +398,7 @@ const batch: Command = {
         const select = new TwStringSelect();
 
         const setSelectValues = () => {
-          if (rolesPage.length === 0) return;
+          if (rolesPage.length === 0) return null;
           select.select
             .setPlaceholder("select roles!")
             .setMinValues(1)
@@ -508,7 +537,7 @@ const batch: Command = {
 
           e.addFields({
             name: "Results",
-            value: ` ${testThreads.map((e) => `**${e.name}**: ${regex.regex.test(e.name) != regex.inverted}`).join("\n")} `,
+            value: ` ${testThreads.map((e) => `**${e.name}**: ${regex.regex.test(e.name) !== regex.inverted}`).join("\n")} `,
           });
 
           interaction.reply({
@@ -548,7 +577,7 @@ const batch: Command = {
 
           const result = await handleThreadActioning(threads, action, filters);
           if (watchNew) {
-            const alreadyExists = (await db.getChannels(parent.id)).find((t) => t.id == parent.id);
+            const alreadyExists = (await db.getChannels(parent.id)).find((t) => t.id === parent.id);
 
             // If filter alr exists for this channel we go ahead and delete it
             // this so the insertion we make later does not cause any oopsie poopsies

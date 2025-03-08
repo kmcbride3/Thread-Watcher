@@ -18,6 +18,7 @@ import { Log76 } from "./utilities/logger";
 import { LogLevel } from "log75";
 import { threadManager } from "./utilities/threadManager";
 import { WatchedThread } from "./interfaces/thread";
+import { shutdownManager } from "./index";
 
 // Create and export the client with optimized intents
 const client = new Client({
@@ -141,7 +142,7 @@ export async function initBot(
           `Failed to load commands: ${error instanceof Error ? error.message : String(error)}`
         );
       }
-      process.exit(1);
+      return shutdownManager.shutdown(1, "Failed to load commands");
     }
 
     // Setup proper client event handlers
@@ -192,7 +193,7 @@ export async function initBot(
 
       const shutdownTimeout: NodeJS.Timeout = setTimeout(() => {
         logger.error("[SHARD] Shutdown process taking too long, forcing exit...");
-        process.exit(1);
+        shutdownManager.shutdown(1, "Shutdown timeout exceeded");
       }, 10000);
 
       try {
@@ -212,13 +213,13 @@ export async function initBot(
 
         logger.trace("Shard process exit");
         process.removeAllListeners();
-        process.exit(0);
+        return shutdownManager.shutdown(0, "Shard shutdown completed");
       } catch (err: unknown) {
         logger.error(`Error during shutdown: ${err}`);
         if (err instanceof Error && err.stack) logger.error(err.stack);
         clearTimeout(shutdownTimeout);
         process.removeAllListeners();
-        process.exit(1);
+        return shutdownManager.shutdown(1, "Error during shard shutdown");
       }
     }
 
@@ -232,7 +233,7 @@ export async function initBot(
       } else {
         logger.error("Discord token is missing or invalid");
       }
-      process.exit(1);
+      return shutdownManager.shutdown(1, "Discord token missing or invalid");
     }
 
     try {
@@ -337,7 +338,7 @@ export async function initBot(
       `Bot initialization failed: ${initError instanceof Error ? initError.message : String(initError)}`
     );
     if (initError instanceof Error && initError.stack) logger.error(initError.stack);
-    process.exit(1);
+    return shutdownManager.shutdown(1, "Bot initialization failed");
   }
 }
 

@@ -1,16 +1,15 @@
 import { PermissionFlagsBits, EmbedBuilder, ThreadChannel } from "discord.js";
-import { client, threads } from "../../bot";
-import { logger } from "../../index";
-import { settings } from "../../bot";
+import { client, threads, settings } from "../../bot";
+import { logger, webLog } from "../../index";
 import { ThreadData } from "../../interfaces/database";
 import { bumpAutoTime, bumpUnknown } from "../threadActions";
 import { handleApiError } from "../apiErrorHandler";
-import { webLog } from "../../index"; // Import the webLog function
+import { setTimeout } from "timers";
 
 // Helper function for user-friendly summary messaging
 function buildEnsureVisibleSummary(summary: {
   worked: number;
-  fail_unknown_channel: number;
+  fail_unknown_thread: number;
   fail_could_not_edit: number;
   failed_perms: number;
 }): string {
@@ -18,8 +17,8 @@ function buildEnsureVisibleSummary(summary: {
   if (summary.worked > 0) {
     lines.push(`Threads bumped successfully: ${summary.worked}`);
   }
-  if (summary.fail_unknown_channel > 0) {
-    lines.push(`Channels not found: ${summary.fail_unknown_channel}`);
+  if (summary.fail_unknown_thread > 0) {
+    lines.push(`Threads not found: ${summary.fail_unknown_thread}`);
   }
   if (summary.failed_perms > 0) {
     lines.push(`Missing permissions: ${summary.failed_perms}`);
@@ -27,16 +26,19 @@ function buildEnsureVisibleSummary(summary: {
   if (summary.fail_could_not_edit > 0) {
     lines.push(`Threads failed to update: ${summary.fail_could_not_edit}`);
   }
-  return lines.length === 0
-    ? "EnsureVisible routine completed with no issues."
-    : `EnsureVisible routine completed successfully.\nSummary:\n- ${lines.join("\n- ")}`;
+
+  if (lines.length === 0) {
+    return "Thread bumping completed with no activity.";
+  } else {
+    return `Thread bumping completed.\nSummary:\n- ${lines.join("\n- ")}`;
+  }
 }
 
 // Queue and counter initialization
 const queue: ThreadData[] = [];
 const summary = {
   worked: 0,
-  fail_unknown_channel: 0,
+  fail_unknown_thread: 0,
   fail_could_not_edit: 0,
   failed_perms: 0,
 };
@@ -66,9 +68,9 @@ const makeVisible = () => {
   client.channels
     .fetch(t.id)
     .then(async (channel) => {
-      if (!channel || !channel.isThread()) return;
+      if (!channel || !channel.isThread()) return null;
       const thread = channel as ThreadChannel;
-      if (!thread?.isThread()) return;
+      if (!thread?.isThread()) return null;
 
       if (thread.archived && thread.unarchivable) {
         await thread.setArchived(false).catch(async (err: Error) => {
@@ -89,7 +91,7 @@ const makeVisible = () => {
       // If user only wants the bot to unarchive the thread without keeping it "active" we can just return here
       if ((await settings.getSetting(thread.guildId, "BEHAVIOUR")) === "UNARCHIVE_ONLY") {
         bumpAutoTime(thread);
-        return;
+        return null;
       }
 
       if (!thread.locked && thread.manageable) {
@@ -186,13 +188,13 @@ const makeVisible = () => {
       bumpAutoTime(thread);
     })
     .catch(() => {
-      summary.fail_unknown_channel++;
-      // We've many unknown channels (probably deleted).
+      summary.fail_unknown_thread++;
+      // We've many unknown threads (probably deleted).
       // (for now) we just "snooze" those for one week but it might be attractive in the future
       // to keep a track of how many revive cycles they've been unknown and pruning when they get
       // over a specific number. Would require a schema change on the db tho
 
-      webLog("Channel Not Found", `Channel not found for thread "${t.id}"`);
+      webLog("Thread Not Found", `Thread with ID "${t.id}" could not be found`);
       bumpUnknown(t.id);
     });
 
@@ -239,6 +241,6 @@ export async function bumpThreadsRoutine(): Promise<void> {
     await logger.info("No threads to bump");
     return;
   }
-  logger.info(`Bumping ${needsBump.length} threads`);
+  logger.info(`Starting thread bumping process for ${needsBump.length} threads`);
   bumpThreads(needsBump);
 }

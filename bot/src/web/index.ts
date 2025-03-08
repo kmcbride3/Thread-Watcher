@@ -6,7 +6,7 @@ import { Database } from "../interfaces/database";
 let started = false;
 
 export default function start(manager: ShardingManager, port: number, database: Database) {
-  if (started) return;
+  if (started) return null;
 
   const app = express();
 
@@ -62,7 +62,7 @@ export default function start(manager: ShardingManager, port: number, database: 
     return new Promise((resolve, reject) => {
       if (!config.tokens.topgg || !config.clientID) {
         resolve(0);
-        return;
+        return null;
       }
 
       fetch(`https://top.gg/api/bots/${config.clientID}`, {
@@ -164,7 +164,7 @@ export default function start(manager: ShardingManager, port: number, database: 
 
             if (typeof row[1] === "boolean" && row[1]) {
               res.send({ found: true, shard: shardId });
-              return;
+              return null;
             }
           }
           res.json({ found: false, shard: -1 });

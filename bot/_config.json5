@@ -43,8 +43,8 @@
     backupInterval: "0 */6 * * *",
     // How many backups you want to keep before writing over old ones
     backupAmount: 10,
-    // allowed: discord | none
-    backupProvider: "discord",
+    // Where to send backup notifications? allowed: discord | none
+    backupProvider: "none",
   },
   // Wheter or not you want your instance stats broadcasted via HTTP. You probably dont
   statsServer: {
