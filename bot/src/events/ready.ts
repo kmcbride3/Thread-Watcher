@@ -1,23 +1,23 @@
-import { Client, Events, ActivityType } from "discord.js";
-import { logger, db } from "../index";
-import { threads } from "../bot";
-import { bumpThreadsRoutine } from "../utilities/routines/ensureVisible";
-import { ThreadData } from "../interfaces/database";
-import { handleApiError } from "../utilities/apiErrorHandler";
-import { trackInitState } from "../utilities/debugUtils";
+import { ActivityType, Client, Events } from "discord.js"
+import { threads } from "../bot"
+import { db, logger } from "../index"
+import { ThreadData } from "../interfaces/database"
+import { handleApiError } from "../utilities/apiErrorHandler"
+import { trackInitState } from "../utilities/debugUtils"
+import { bumpThreadsRoutine } from "../utilities/routines/ensureVisible"
 
 export default {
   name: Events.ClientReady,
   once: true,
   execute(client: Client) {
-    logger.done(`Ready! Logged in as ${client.user?.tag}`);
+    logger.debug(`Logged in as ${client.user?.tag} to Discord`);
     trackInitState("Bot ready");
 
-    const promises: Promise<ThreadData[] | void>[] = [];
+    const promises: Promise<ThreadData[] | undefined>[] = [];
 
     const loadThreads = async (): Promise<void> => {
       for (const [, guild] of client.guilds.cache) {
-        const dbPromise: Promise<ThreadData[] | void> = db
+        const dbPromise = db
           .getThreads(guild.id)
           .then((res) => {
             for (const t of res)
@@ -27,9 +27,11 @@ export default {
                 watching: t.watching,
                 dueArchive: t.dueArchive,
               });
+            return res;
           })
           .catch((err) => {
             handleApiError(err, loadThreads);
+            return undefined;
           });
 
         promises.push(dbPromise);
@@ -55,7 +57,7 @@ export default {
       .then((results) => {
         interface LoadThreadsResult {
           status: "fulfilled" | "rejected";
-          value?: ThreadData[] | void;
+          value?: ThreadData[];
           reason?: unknown;
         }
 

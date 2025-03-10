@@ -1,6 +1,6 @@
-import { stringify, parse as j5Parse } from "json5";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "fs";
+import { parse as j5Parse, stringify } from "json5";
 import { join } from "path";
-import { existsSync, renameSync, readFileSync, writeFileSync } from "fs";
 import { validateValue } from "./defaults";
 
 const P_J5 = join(__dirname, "../../../config.json5");
@@ -46,6 +46,7 @@ export interface ConfigFile {
   logToFile: boolean;
   logBold: boolean;
   logInverted: boolean;
+  shardCount?: number | "auto"; // Add shard count configuration
 }
 
 async function parse(): Promise<void> {
@@ -76,7 +77,7 @@ function ensureFile() {
     console.error(
       'No config exists.\nCopy the contents of https://github.com/ffamilyfriendly/Thread-Watcher/blob/main/bot/_config.json5 into a file called "config.json5" in the bot folder.'
     );
-    process.exit(1);
+    throw new Error("No config file found");
   }
 
   if (tsCnfExists) {
@@ -90,101 +91,86 @@ function ensureFile() {
     renameSync(P_FBJ5, P_J5);
     return null;
   }
+
+  return undefined;
+}
+
+function overrideTokens(config: ConfigFile): ConfigFile["tokens"] {
+  return {
+    discord: process.env.DISCORD_TOKEN || config.tokens.discord || "",
+    topgg: process.env.TOPGG_TOKEN || config.tokens.topgg || "",
+  };
+}
+
+function overrideClientID(config: ConfigFile): string {
+  return process.env.CLIENT_ID || config.clientID || "";
+}
+
+function overrideDatabase(config: ConfigFile): ConfigFile["database"] {
+  return {
+    ...config.database,
+    type: (process.env.DB_TYPE as "sqlite" | "mysql") || config.database.type || "sqlite",
+    options: {
+      user: process.env.DB_USER || config.database.options.user || "",
+      password: process.env.DB_PASSWORD || config.database.options.password || "",
+      host: process.env.DB_HOST || config.database.options.host || "localhost",
+      port: process.env.DB_PORT
+        ? parseInt(process.env.DB_PORT, 10)
+        : config.database.options.port || 3306,
+      database: process.env.DB_NAME || config.database.options.database || "threadwatcher",
+      dataLocation:
+        process.env.DB_DATA_LOCATION || config.database.options.dataLocation || "./data",
+    },
+    backupInterval:
+      process.env.DB_BACKUP_INTERVAL || config.database.backupInterval || "0 */6 * * *",
+    backupAmount: process.env.DB_BACKUP_AMOUNT
+      ? parseInt(process.env.DB_BACKUP_AMOUNT, 10)
+      : config.database.backupAmount || 10,
+    backupProvider:
+      (process.env.DB_BACKUP_PROVIDER as "none" | "discord") ||
+      config.database.backupProvider ||
+      "none",
+  };
+}
+
+function overrideStatsServer(config: ConfigFile): ConfigFile["statsServer"] {
+  return {
+    enabled: process.env.STATS_SERVER_ENABLED === "true" || config.statsServer.enabled || false,
+    port: process.env.STATS_SERVER_PORT
+      ? parseInt(process.env.STATS_SERVER_PORT, 10)
+      : config.statsServer.port || 3000,
+  };
+}
+
+function overrideMisc(config: ConfigFile): Partial<ConfigFile> {
+  return {
+    devServer: process.env.DEV_SERVER || config.devServer || "",
+    devServerInvite: process.env.DEV_SERVER_INVITE || config.devServerInvite || "",
+    logWebhook: process.env.LOG_WEBHOOK || config.logWebhook || "",
+    logLevel:
+      (process.env.LOG_LEVEL as "Quiet" | "Standard" | "Debug" | "Trace") ||
+      config.logLevel ||
+      "Standard",
+    logToFile: process.env.LOG_TO_FILE === "true" || config.logToFile || false,
+    logBold: process.env.LOG_BOLD === "true" || config.logBold || false,
+    logInverted: process.env.LOG_INVERTED === "true" || config.logInverted || false,
+    shardCount:
+      process.env.SHARD_COUNT === "auto"
+        ? "auto"
+        : process.env.SHARD_COUNT
+          ? parseInt(process.env.SHARD_COUNT, 10)
+          : config.shardCount || 1, // Add environment variable override
+  };
 }
 
 function overrideWithEnv(config: ConfigFile): ConfigFile {
-  const envOverrides = {
-    tokens: {
-      discord: process.env.DISCORD_TOKEN,
-      topgg: process.env.TOPGG_TOKEN,
-    },
-    clientID: process.env.CLIENT_ID,
-    database: {
-      type: process.env.DB_TYPE as "sqlite" | "mysql",
-      options: {
-        user: process.env.DB_USER,
-        password: process.env.DB_PASSWORD,
-        host: process.env.DB_HOST,
-        port: process.env.DB_PORT ? parseInt(process.env.DB_PORT, 10) : undefined,
-        database: process.env.DB_NAME,
-        dataLocation: process.env.DB_DATA_LOCATION,
-      },
-      backupInterval: process.env.DB_BACKUP_INTERVAL,
-      backupAmount: process.env.DB_BACKUP_AMOUNT
-        ? parseInt(process.env.DB_BACKUP_AMOUNT, 10)
-        : undefined,
-      backupProvider: process.env.DB_BACKUP_PROVIDER as "none" | "discord",
-    },
-    statsServer: {
-      enabled: process.env.STATS_SERVER_ENABLED === "true",
-      port: process.env.STATS_SERVER_PORT ? parseInt(process.env.STATS_SERVER_PORT, 10) : undefined,
-    },
-    devServer: process.env.DEV_SERVER,
-    devServerInvite: process.env.DEV_SERVER_INVITE,
-    logWebhook: process.env.LOG_WEBHOOK,
-    logLevel: process.env.LOG_LEVEL as "Quiet" | "Standard" | "Debug" | "Trace",
-    logToFile: process.env.LOG_TO_FILE === "true",
-    logBold: process.env.LOG_BOLD === "true",
-    logInverted: process.env.LOG_INVERTED === "true",
-  };
-
   return {
     ...config,
-    tokens: {
-      discord: envOverrides.tokens.discord || config.tokens.discord || "",
-      topgg: envOverrides.tokens.topgg || config.tokens.topgg || "",
-    },
-    clientID: envOverrides.clientID || config.clientID || "",
-    database: {
-      ...config.database,
-      type: envOverrides.database.type || config.database.type || "sqlite",
-      options: {
-        user: envOverrides.database.options.user || config.database.options.user || "",
-        password: envOverrides.database.options.password || config.database.options.password || "",
-        host: envOverrides.database.options.host || config.database.options.host || "localhost",
-        port:
-          envOverrides.database.options.port !== undefined
-            ? envOverrides.database.options.port
-            : config.database.options.port || 3306,
-        database:
-          envOverrides.database.options.database ||
-          config.database.options.database ||
-          "threadwatcher",
-        dataLocation:
-          envOverrides.database.options.dataLocation ||
-          config.database.options.dataLocation ||
-          "./data",
-      },
-      backupInterval:
-        envOverrides.database.backupInterval || config.database.backupInterval || "0 */6 * * *",
-      backupAmount:
-        envOverrides.database.backupAmount !== undefined
-          ? envOverrides.database.backupAmount
-          : config.database.backupAmount || 10,
-      backupProvider:
-        envOverrides.database.backupProvider || config.database.backupProvider || "none",
-    },
-    statsServer: {
-      enabled:
-        envOverrides.statsServer.enabled !== undefined
-          ? envOverrides.statsServer.enabled
-          : config.statsServer.enabled || false,
-      port:
-        envOverrides.statsServer.port !== undefined
-          ? envOverrides.statsServer.port
-          : config.statsServer.port || 3000,
-    },
-    devServer: envOverrides.devServer || config.devServer || "",
-    devServerInvite: envOverrides.devServerInvite || config.devServerInvite || "",
-    logWebhook: envOverrides.logWebhook || config.logWebhook || "",
-    logLevel: envOverrides.logLevel || config.logLevel || "Standard",
-    logToFile:
-      envOverrides.logToFile !== undefined ? envOverrides.logToFile : config.logToFile || false,
-    logBold: envOverrides.logBold !== undefined ? envOverrides.logBold : config.logBold || false,
-    logInverted:
-      envOverrides.logInverted !== undefined
-        ? envOverrides.logInverted
-        : config.logInverted || false,
+    tokens: overrideTokens(config),
+    clientID: overrideClientID(config),
+    database: overrideDatabase(config),
+    statsServer: overrideStatsServer(config),
+    ...overrideMisc(config),
   };
 }
 
@@ -210,6 +196,6 @@ export function getConfig(): ConfigFile {
     return finalConfig;
   } catch (error) {
     console.error(`Error reading the config file: ${error}`);
-    process.exit(1);
+    throw new Error("Error reading the config file");
   }
 }

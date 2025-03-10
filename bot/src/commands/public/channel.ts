@@ -1,40 +1,89 @@
-import { ChatInputCommandInteraction, PermissionFlagsBits, SlashCommandBuilder } from "discord.js";
-import { Command, statusType } from "../../interfaces/command";
+import {
+  ChatInputCommandInteraction,
+  MessageFlagsBitField,
+  PermissionFlagsBits,
+  SlashCommandBuilder,
+} from "discord.js";
 import { db } from "../../index";
+import { Command, statusType } from "../../interfaces/command";
+import { ErrorSeverity, handleApiError, handleCommandError } from "../../utilities/errorSystem";
+import { rateLimitManager } from "../../utilities/rateLimitManager";
+import { THREAD_RELATED_CHANNEL_TYPES } from "../../utilities/threadUtils";
 
 const info: Command = {
   run: async (interaction: ChatInputCommandInteraction, buildBaseEmbed) => {
-    const channel = interaction.options.getChannel("channel");
-
-    if (!channel) return;
-
-    await interaction.deferReply();
-
-    const command = interaction.options.getSubcommand(true);
-
-    const alrExists = (await db.getChannels(interaction.guildId ?? "")).find(
-      (t) => t.id === channel.id
-    );
-
-    if (command === "add") {
-      if (alrExists) {
-        buildBaseEmbed("Already watched", statusType.warning, {
-          description: "That channel is already watched. Remove it with `/channel remove`",
+    try {
+      const channel = interaction.options.getChannel("channel");
+      if (!channel) {
+        await interaction.reply({
+          embeds: [
+            buildBaseEmbed("Error", statusType.error, { description: "Channel not specified" }),
+          ],
+          flags: [MessageFlagsBitField.Flags.Ephemeral],
         });
         return;
       }
 
-      db.insertChannel({
-        server: interaction.guildId ?? "",
-        id: channel.id,
-        regex: "",
-        roles: [],
-        tags: [],
+      await interaction.deferReply();
+      await rateLimitManager.waitForRateLimit(`guilds/${interaction.guildId}/channels`);
+      const command = interaction.options.getSubcommand(true);
+
+      await handleApiError(
+        "Failed to fetch channel data",
+        async () => {
+          const alrExists = (await db.getChannels(interaction.guildId ?? "")).find(
+            (t) => t.id === channel.id
+          );
+
+          if (command === "add") {
+            if (alrExists) {
+              await interaction.editReply({
+                embeds: [
+                  buildBaseEmbed("Already watched", statusType.warning, {
+                    description:
+                      "That channel is already watched. Remove it with `/channel remove`",
+                  }),
+                ],
+              });
+              return;
+            }
+
+            await db.insertChannel({
+              server: interaction.guildId ?? "",
+              id: channel.id,
+              regex: "",
+              roles: [],
+              tags: [],
+            });
+            await interaction.editReply({
+              embeds: [
+                buildBaseEmbed("Added channel", statusType.success, {
+                  description: `Channel <#${channel.id}> has been added to the watchlist`,
+                }),
+              ],
+            });
+          } else {
+            await db.deleteChannel(channel.id);
+            await interaction.editReply({
+              embeds: [
+                buildBaseEmbed("Removed channel", statusType.success, {
+                  description: `Channel <#${channel.id}> has been removed from the watchlist`,
+                }),
+              ],
+            });
+          }
+        },
+        {
+          context: `Channel Command - ${command}`,
+          reportAtSeverity: ErrorSeverity.MEDIUM,
+        }
+      );
+    } catch (error) {
+      await handleCommandError(interaction, error, buildBaseEmbed, {
+        errorTitle: "Channel Action Failed",
+        errorDescription: "Failed to process channel action. Please try again later.",
+        context: "Channel command",
       });
-      buildBaseEmbed("Added channel", statusType.success);
-    } else {
-      db.deleteChannel(channel.id);
-      buildBaseEmbed("Removed channel", statusType.success);
     }
   },
   gatekeeping: {
@@ -53,6 +102,7 @@ const info: Command = {
           option
             .setName("channel")
             .setDescription("the channel or category you want to add")
+            .addChannelTypes(...THREAD_RELATED_CHANNEL_TYPES)
             .setRequired(true)
         )
     )
@@ -64,6 +114,7 @@ const info: Command = {
           option
             .setName("channel")
             .setDescription("the channel or category you want to remove")
+            .addChannelTypes(...THREAD_RELATED_CHANNEL_TYPES)
             .setRequired(true)
         )
     ),

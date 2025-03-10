@@ -53,8 +53,7 @@ export function getDatabase(type: DataBases, config: ConfigFile, logger?: Logger
  */
 export function initializeDatabase(config: ConfigFile, logger?: Logger): Database {
   // Default to SQLite if not specified
-  const dbType =
-    config.database && config.database.type ? DataBases[config.database.type] : DataBases.sqlite;
+  const dbType = config.database?.type ? DataBases[config.database.type] : DataBases.sqlite;
 
   // Create and return database instance directly
   return getDatabase(dbType, config, logger);

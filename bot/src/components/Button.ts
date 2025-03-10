@@ -2,11 +2,13 @@ import {
   ButtonBuilder,
   ButtonInteraction,
   ButtonStyle,
-  ComponentEmojiResolvable,
   Collection,
+  ComponentEmojiResolvable,
   MessageFlagsBitField,
 } from "discord.js";
+import { logger } from "../index";
 import TwGenericComponent from "../interfaces/genericComponent";
+import { handleApiError } from "../utilities/apiErrorHandler";
 
 type buttonOnClick = (interaction: ButtonInteraction) => void;
 export type buttonFilter = (interaction: ButtonInteraction) => boolean;
@@ -37,7 +39,6 @@ export default class TwButton implements TwGenericComponent<ButtonInteraction> {
       url?: string;
     }
   ) {
-    // Replace Math.random with a more secure ID generation method
     this.id = `btn_${Date.now()}_${crypto.randomUUID().slice(0, 8)}`;
 
     this.button = new ButtonBuilder().setLabel(label).setStyle(style).setCustomId(this.id);
@@ -48,32 +49,63 @@ export default class TwButton implements TwGenericComponent<ButtonInteraction> {
     if (misc.url) this.button.setURL(misc.url);
   }
 
-  public middleware(interaction: ButtonInteraction): void {
-    if (this.filter && this.callback && this.filter(interaction)) {
-      this.callback(interaction);
-    } else if (this.callback) {
-      this.callback(interaction);
-    } else {
-      interaction.reply({
-        content:
-          " <:statusurgent:960959148848214017> This button is no longer valid or you don't have permission to use it.",
-        flags: [MessageFlagsBitField.Flags.Ephemeral],
-      });
+  public async middleware(interaction: ButtonInteraction): Promise<void> {
+    try {
+      if (this.filter && this.callback && this.filter(interaction)) {
+        await handleApiError(
+          null,
+          async () => {
+            if (this.callback) await this.callback(interaction);
+          },
+          2,
+          500
+        );
+      } else if (this.callback) {
+        await handleApiError(
+          null,
+          async () => {
+            if (this.callback) await this.callback(interaction);
+          },
+          2,
+          500
+        );
+      } else {
+        await interaction.reply({
+          content:
+            " <:statusurgent:960959148848214017> This button is no longer valid or you don't have permission to use it.",
+          flags: [MessageFlagsBitField.Flags.Ephemeral],
+        });
+      }
+    } catch (error) {
+      logger.error(`Button middleware error for ${this.id}: ${error}`);
+
+      if (!interaction.replied && !interaction.deferred) {
+        try {
+          await interaction.reply({
+            content: "An error occurred while processing this button.",
+            flags: [MessageFlagsBitField.Flags.Ephemeral],
+          });
+        } catch (replyError) {
+          logger.error(`Failed to send error response: ${replyError}`);
+        }
+      }
     }
   }
 
   public _middleware(interaction: ButtonInteraction): void {
-    return this.middleware(interaction);
+    this.middleware(interaction).catch((err) =>
+      logger.error(`Uncaught error in button middleware: ${err}`)
+    );
   }
 
-  close(setDisabled: boolean) {
+  close(setDisabled = false): void {
     ButtonInteractionQueue.delete(this.id);
     if (setDisabled) {
       this.button.setDisabled(true);
     }
   }
 
-  onclick(callback: buttonOnClick) {
+  onclick(callback: buttonOnClick): void {
     this.callback = callback;
     ButtonInteractionQueue.set(this.id, this);
   }

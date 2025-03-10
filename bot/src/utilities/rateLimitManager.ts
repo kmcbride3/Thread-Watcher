@@ -1,5 +1,6 @@
-import { REST, RESTEvents, RateLimitData, Collection } from "discord.js";
+import { Collection, REST, RESTEvents, RateLimitData } from "discord.js";
 import { logger } from "../index";
+import { ErrorSeverity, handleApiError } from "./errorSystem";
 
 /**
  * Information about a rate limit bucket
@@ -9,14 +10,7 @@ interface BucketInfo {
   limit: number;
   remaining: number;
   reset: number;
-}
-
-/**
- * Global rate limit status
- */
-interface GlobalRateLimit {
-  limited: boolean;
-  reset: number;
+  route: string;
 }
 
 /**
@@ -25,13 +19,14 @@ interface GlobalRateLimit {
 export class RateLimitManager {
   private static instance: RateLimitManager;
   private buckets = new Collection<string, BucketInfo>();
-  private globalRateLimit: GlobalRateLimit = { limited: false, reset: 0 };
+  private globalResetTime = 0;
   private rest: REST | null = null;
-  private rateLimitedUntil = new Collection<string, number>();
+  private rateLimitedRoutes = new Collection<string, number>();
 
   // Private constructor for singleton
   private constructor() {
-    // Empty constructor
+    // Schedule periodic cleanup
+    setInterval(() => this.cleanupExpiredRateLimits(), 60000);
   }
 
   /**
@@ -62,25 +57,7 @@ export class RateLimitManager {
 
     // Register global rate limit handler
     this.rest.on(RESTEvents.RateLimited, (data: RateLimitData) => {
-      logger.warn(`[REST] Rate limit hit: ${JSON.stringify(data)}`);
-
-      if (data.global) {
-        this.globalRateLimit = {
-          limited: true,
-          reset: Date.now() + data.timeToReset,
-        };
-        logger.warn(
-          `[REST] Global rate limit activated until ${new Date(this.globalRateLimit.reset).toISOString()}`
-        );
-      } else {
-        const bucket = this.getBucket(data.route || "unknown");
-        bucket.limited = true;
-        bucket.reset = Date.now() + data.timeToReset;
-        bucket.remaining = 0;
-        logger.debug(
-          `[REST] Rate limit for bucket ${data.route} until ${new Date(bucket.reset).toISOString()}`
-        );
-      }
+      this.handleRateLimit(data);
     });
 
     logger.debug("Rate limit manager initialized and monitoring REST client");
@@ -93,25 +70,27 @@ export class RateLimitManager {
     const { route, timeToReset, global } = data;
     const resetTime = Date.now() + timeToReset;
 
-    this.rateLimitedUntil.set(route, resetTime);
+    this.rateLimitedRoutes.set(route, resetTime);
+
     logger.warn(
       `Rate limit hit for route ${route}. Retrying after ${new Date(resetTime).toISOString()}`
     );
 
     if (global) {
-      this.globalRateLimit = {
-        limited: true,
-        reset: Date.now() + data.timeToReset,
-      };
+      this.globalResetTime = resetTime;
       logger.warn(
-        `Global rate limit activated until ${new Date(this.globalRateLimit.reset).toISOString()}`
+        `Global rate limit activated until ${new Date(this.globalResetTime).toISOString()}`
       );
     } else {
-      const bucket = this.getBucket(route || "unknown");
-      bucket.limited = true;
-      bucket.reset = Date.now() + data.timeToReset;
-      bucket.remaining = 0;
-      logger.debug(`Rate limit for bucket ${route} until ${new Date(bucket.reset).toISOString()}`);
+      this.buckets.set(route, {
+        limited: true,
+        limit: data.limit || 5,
+        remaining: 0,
+        reset: resetTime,
+        route,
+      });
+
+      logger.debug(`Rate limit for bucket ${route} until ${new Date(resetTime).toISOString()}`);
     }
   }
 
@@ -119,50 +98,69 @@ export class RateLimitManager {
    * Handle a 429 rate limit error
    */
   public async handle429(route: string, headers: Record<string, string>): Promise<void> {
-    logger.warn(`429 Rate limit hit on ${route}, retrying after delay`);
-
-    // Update rate limit information
+    // Update rate limit information from headers
     this.updateFromHeaders(route, headers);
 
-    // Wait based on retry-after header
     const retryAfter = headers["retry-after"] ? parseInt(headers["retry-after"], 10) * 1000 : 5000;
+    const isGlobal = headers["x-ratelimit-global"] === "true";
 
-    logger.debug(`Waiting ${retryAfter}ms before retrying request to ${route}`);
-    await new Promise((resolve) => setTimeout(resolve, retryAfter));
+    // Use appropriate severity based on whether it's global or route-specific
+    const severity = isGlobal ? ErrorSeverity.HIGH : ErrorSeverity.MEDIUM;
+
+    logger.debug(`Received 429, waiting ${retryAfter}ms before retrying request to ${route}`);
+
+    await handleApiError(
+      `Rate limit exceeded for ${route}`,
+      async () => {
+        await new Promise<void>((resolve) => setTimeout(resolve, retryAfter));
+      },
+      {
+        retries: 0, // No additional retries needed as we're already waiting
+        retryDelay: 0, // No additional delay needed
+        reportAtSeverity: severity,
+        context: `Rate Limit ${isGlobal ? "Global" : route}`,
+      }
+    );
   }
 
   /**
    * Check if a request should be allowed based on rate limits
    */
   public canMakeRequest(route: string): boolean {
+    const now = Date.now();
+
     // Check global rate limit first
-    if (this.globalRateLimit.limited) {
-      if (Date.now() > this.globalRateLimit.reset) {
-        this.globalRateLimit.limited = false;
-        logger.trace("Global rate limit expired");
-      } else {
+    if (this.globalResetTime > now) {
+      return false;
+    }
+
+    // Check if this specific route is rate limited
+    if (this.rateLimitedRoutes.has(route)) {
+      const resetTime = this.rateLimitedRoutes.get(route);
+      if (resetTime && resetTime > now) {
         return false;
+      } else {
+        // Clear expired rate limit
+        this.rateLimitedRoutes.delete(route);
       }
     }
 
     // Check bucket-specific rate limit
-    const bucket = this.getBucket(route);
+    const bucket = this.buckets.get(route);
+    if (!bucket) return true; // No limit known yet
 
-    if (bucket.limited && Date.now() > bucket.reset) {
+    if (bucket.reset <= now) {
+      // Reset has passed, update bucket
       bucket.limited = false;
       bucket.remaining = bucket.limit;
-      logger.trace(`Rate limit for ${route} has reset`);
+      return true;
     }
 
-    if (bucket.limited) {
+    if (bucket.limited || bucket.remaining <= 0) {
       return false;
     }
 
-    if (bucket.remaining <= 0) {
-      bucket.limited = true;
-      return false;
-    }
-
+    // We have remaining requests, decrement and allow
     bucket.remaining--;
     return true;
   }
@@ -171,25 +169,67 @@ export class RateLimitManager {
    * Wait until a request can be made
    */
   public async waitForRateLimit(route: string): Promise<void> {
-    while (!this.canMakeRequest(route)) {
-      // Wait for the smallest reset time between global and bucket-specific
-      const globalWait = this.globalRateLimit.limited
-        ? Math.max(0, this.globalRateLimit.reset - Date.now())
-        : 0;
+    await handleApiError(
+      null,
+      async () => {
+        while (!this.canMakeRequest(route)) {
+          const waitTime = this.calculateWaitTime(route);
+          await new Promise((resolve) => setTimeout(resolve, waitTime));
+        }
+      },
+      {
+        retries: 2, // Allow up to 2 retries
+        retryDelay: 1000, // 1 second initial delay between retries
+        reportAtSeverity: ErrorSeverity.MEDIUM,
+        context: `Rate Limit Wait (${route})`,
+      }
+    );
+  }
 
-      const bucket = this.getBucket(route);
-      const bucketWait = bucket.limited ? Math.max(0, bucket.reset - Date.now()) : 0;
+  /**
+   * Calculate the appropriate wait time for a route
+   * @private
+   */
+  private calculateWaitTime(route: string): number {
+    const now = Date.now();
+    let waitTime = 100; // Default minimum wait
 
-      const waitTime = Math.max(globalWait, bucketWait, 100); // Minimum 100ms
-      await new Promise((resolve) => setTimeout(resolve, waitTime));
+    // Check global limit
+    if (this.globalResetTime > now) {
+      waitTime = Math.max(waitTime, this.globalResetTime - now);
     }
+
+    // Check route-specific limit
+    const routeReset = this.rateLimitedRoutes.get(route);
+    if (routeReset && routeReset > now) {
+      waitTime = Math.max(waitTime, routeReset - now);
+    }
+
+    // Check bucket limit
+    const bucket = this.buckets.get(route);
+    if (bucket && bucket.reset > now) {
+      waitTime = Math.max(waitTime, bucket.reset - now);
+    }
+
+    // Add small jitter to prevent thundering herd problems
+    return waitTime + Math.random() * 200;
   }
 
   /**
    * Update bucket info based on response headers
    */
   public updateFromHeaders(route: string, headers: Record<string, string>): void {
-    const bucket = this.getBucket(route);
+    let bucket = this.buckets.get(route);
+    if (!bucket) {
+      bucket = {
+        limited: false,
+        limit: 5,
+        remaining: 5,
+        reset: 0,
+        route,
+      };
+      this.buckets.set(route, bucket);
+    }
 
     if (headers["x-ratelimit-limit"]) {
       bucket.limit = Number(headers["x-ratelimit-limit"]);
@@ -204,53 +244,101 @@ export class RateLimitManager {
       bucket.reset = resetTime;
     }
 
+    if (headers["x-ratelimit-reset-after"]) {
+      const resetAfter = Number(headers["x-ratelimit-reset-after"]) * 1000;
+      bucket.reset = Date.now() + resetAfter;
+    }
+
     if (headers["x-ratelimit-global"] === "true") {
-      this.globalRateLimit.limited = true;
       if (headers["retry-after"]) {
         const retryAfter = Number(headers["retry-after"]) * 1000;
-        this.globalRateLimit.reset = Date.now() + retryAfter;
+        this.globalResetTime = Date.now() + retryAfter;
       }
+    }
+
+    // Update the rateLimitedRoutes collection for faster lookup
+    if (bucket.limited || bucket.remaining <= 0) {
+      this.rateLimitedRoutes.set(route, bucket.reset);
     }
   }
 
   /**
-   * Get or create a rate limit bucket
-   * @private
+   * Get a bucket by route
    */
-  private getBucket(route: string): BucketInfo {
-    if (!this.buckets.has(route)) {
-      this.buckets.set(route, {
-        limited: false,
-        limit: 5, // Conservative default
-        remaining: 5,
-        reset: 0,
-      });
-    }
-    const bucket = this.buckets.get(route);
-    return (
-      bucket ?? {
-        limited: false,
-        limit: 5,
-        remaining: 5,
-        reset: 0,
-      }
-    );
+  public getBucket(route: string): BucketInfo | undefined {
+    return this.buckets.get(route);
   }
 
   /**
    * Check if a route is rate limited
    */
   public isRateLimited(route: string): boolean {
-    const resetTime = this.rateLimitedUntil.get(route);
-    if (!resetTime) return false;
-    return Date.now() < resetTime;
+    const resetTime = this.rateLimitedRoutes.get(route);
+    if (resetTime && Date.now() < resetTime) return true;
+
+    // Also check global rate limit
+    return Date.now() < this.globalResetTime;
   }
 
   /**
    * Get the reset time for a rate-limited route
    */
   public getRateLimitedUntil(route: string): number | undefined {
-    return this.rateLimitedUntil.get(route);
+    return this.rateLimitedRoutes.get(route);
+  }
+
+  /**
+   * Clean up expired rate limits to prevent memory leaks
+   * @private
+   */
+  private cleanupExpiredRateLimits(): void {
+    const now = Date.now();
+
+    const expiredRoutes = this.rateLimitedRoutes.sweep((resetTime) => resetTime <= now);
+
+    // Count and reset expired buckets
+    let resetBuckets = 0;
+    this.buckets.forEach((bucket, _route) => {
+      if (bucket.reset <= now && (bucket.limited || bucket.remaining < bucket.limit)) {
+        // Reset the bucket
+        bucket.limited = false;
+        bucket.remaining = bucket.limit;
+        resetBuckets++;
+      }
+    });
+
+    // Log both cleanup operations if anything happened
+    if (expiredRoutes > 0 || resetBuckets > 0) {
+      logger.trace(
+        `Rate limit cleanup: removed ${expiredRoutes} routes, reset ${resetBuckets} buckets`
+      );
+    }
+  }
+
+  /**
+   * Get all currently rate-limited routes for debugging
+   */
+  public getCurrentRateLimits(): { route: string; reset: Date }[] {
+    const now = Date.now();
+    const limits: { route: string; reset: Date }[] = [];
+
+    this.rateLimitedRoutes.forEach((resetTime, route) => {
+      if (resetTime > now) {
+        limits.push({
+          route,
+          reset: new Date(resetTime),
+        });
+      }
+    });
+
+    if (this.globalResetTime > now) {
+      limits.push({
+        route: "GLOBAL",
+        reset: new Date(this.globalResetTime),
+      });
+    }
+
+    return limits;
   }
 }
 

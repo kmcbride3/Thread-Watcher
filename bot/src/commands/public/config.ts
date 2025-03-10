@@ -1,65 +1,62 @@
 import {
   ChannelType,
   ChatInputCommandInteraction,
+  EmbedBuilder,
   PermissionFlagsBits,
   SlashCommandBuilder,
 } from "discord.js";
+import { botSettings } from "../../bot";
 import { Command, statusType } from "../../interfaces/command";
-import { settings } from "../../bot";
+import { EmbedBuilderFunction } from "../../utilities/embedUtils";
+import { ErrorSeverity, handleApiError, handleCommandError } from "../../utilities/errorSystem";
+import { rateLimitManager } from "../../utilities/rateLimitManager";
 
-const info: Command = {
-  run: async (interaction: ChatInputCommandInteraction, buildBaseEmbed) => {
-    await interaction.deferReply();
-    const group = interaction.options.getSubcommandGroup(true);
-    const subcommand = interaction.options.getSubcommand(true);
+const configCommand: Command = {
+  run: async (interaction: ChatInputCommandInteraction, embedBuilder: EmbedBuilderFunction) => {
+    try {
+      await interaction.deferReply();
 
-    /**
-     * THIS IS A CERTIFIED SILLY ZONE
-     * this whole command could've probably been made more simple with a handler of some sort idk
-     * I just wanna deploy this and get back to like borderlands 2
-     */
-    if (group === "logs") {
-      if (subcommand === "reset") {
-        settings.removeSetting(interaction.guildId ?? "", "LOGCHANNEL");
-        buildBaseEmbed("Done", statusType.success, {
-          description: "set config `LOGCHANNEL` to default value",
-        });
+      const settingGroup = interaction.options.getSubcommandGroup(true);
+      const settingAction = interaction.options.getSubcommand(true);
+
+      // Check for rate limits before proceeding
+      const settingsRoute = `guilds/${interaction.guildId}/settings`;
+      await rateLimitManager.waitForRateLimit(settingsRoute);
+
+      let responseEmbed: EmbedBuilder;
+
+      if (settingGroup === "logs") {
+        responseEmbed = await handleApiError(
+          "Failed to manage log settings",
+          async () => await handleLogsConfig(interaction, settingAction, embedBuilder),
+          {
+            context: "Config Command - Logs Settings",
+            reportAtSeverity: ErrorSeverity.MEDIUM,
+          }
+        );
+      } else if (settingGroup === "behaviour") {
+        responseEmbed = await handleApiError(
+          "Failed to manage behavior settings",
+          async () => await handleBehaviourConfig(interaction, settingAction, embedBuilder),
+          {
+            context: "Config Command - Behavior Settings",
+            reportAtSeverity: ErrorSeverity.MEDIUM,
+          }
+        );
       } else {
-        const channel = interaction.options.getChannel("channel", true);
-        settings
-          .setSetting(interaction.guildId ?? "", "LOGCHANNEL", channel.id)
-          .then(() => {
-            buildBaseEmbed("Done", statusType.success, {
-              description: `set config \`LOGCHANNEL\` to value \`${channel.id}\``,
-            });
-          })
-          .catch(() => {
-            buildBaseEmbed("Failed", statusType.error, {
-              description: `could not set config \`LOGCHANNEL\` to value \`${channel.id}\``,
-            });
-          });
-      }
-    } else if (group === "behaviour") {
-      if (subcommand === "reset") {
-        settings.removeSetting(interaction.guildId ?? "", "BEHAVIOUR");
-        buildBaseEmbed("Done", statusType.success, {
-          description: "set config `BEHAVIOUR` to default value",
+        responseEmbed = embedBuilder("Invalid Settings", statusType.error, {
+          description: "Unknown settings group requested",
         });
-      } else {
-        const behaviour = interaction.options.getString("behaviour", true);
-        settings
-          .setSetting(interaction.guildId ?? "", "BEHAVIOUR", behaviour)
-          .then(() => {
-            buildBaseEmbed("Done", statusType.success, {
-              description: `set config \`BEHAVIOUR\` to value \`${behaviour}\``,
-            });
-          })
-          .catch(() => {
-            buildBaseEmbed("Failed", statusType.error, {
-              description: `could not set config \`BEHAVIOUR\` to value \`${behaviour}\``,
-            });
-          });
       }
+
+      await interaction.editReply({ embeds: [responseEmbed] });
+    } catch (error) {
+      await handleCommandError(interaction, error, embedBuilder, {
+        errorTitle: "Settings Update Failed",
+        errorDescription: "An error occurred while updating server settings",
+        context: "Config Command",
+        reportAtSeverity: ErrorSeverity.MEDIUM,
+      });
     }
   },
   gatekeeping: {
@@ -70,16 +67,16 @@ const info: Command = {
   data: new SlashCommandBuilder()
     .setName("config")
     .setDescription("configure settings")
-    .addSubcommandGroup((g) =>
-      g
+    .addSubcommandGroup((group) =>
+      group
         .setName("logs")
         .setDescription("Where thread-watcher will send logs")
-        .addSubcommand((c) =>
-          c
+        .addSubcommand((subcommand) =>
+          subcommand
             .setName("set")
             .setDescription("select a new value")
-            .addChannelOption((o) =>
-              o
+            .addChannelOption((option) =>
+              option
                 .setName("channel")
                 .setDescription("the channel logs will be sent in")
                 .addChannelTypes(
@@ -90,20 +87,20 @@ const info: Command = {
                 .setRequired(true)
             )
         )
-        .addSubcommand((c) =>
-          c.setName("reset").setDescription("will reset the value to the default")
+        .addSubcommand((subcommand) =>
+          subcommand.setName("reset").setDescription("will reset the value to the default")
         )
     )
-    .addSubcommandGroup((g) =>
-      g
+    .addSubcommandGroup((group) =>
+      group
         .setName("behaviour")
         .setDescription("how thread-watcher will treat threads")
-        .addSubcommand((c) =>
-          c
+        .addSubcommand((subcommand) =>
+          subcommand
             .setName("set")
             .setDescription("select a new value")
-            .addStringOption((o) =>
-              o
+            .addStringOption((option) =>
+              option
                 .setName("behaviour")
                 .setDescription("how thread-watcher will treat threads")
                 .setRequired(true)
@@ -119,10 +116,125 @@ const info: Command = {
                 )
             )
         )
-        .addSubcommand((c) =>
-          c.setName("reset").setDescription("will reset the value to the default")
+        .addSubcommand((subcommand) =>
+          subcommand.setName("reset").setDescription("will reset the value to the default")
         )
     ),
 };
 
-export default info;
+/**
+ * Handle logs configuration subcommands
+ * @param interaction The interaction that triggered this command
+ * @param action The action to perform (set or reset)
+ * @param embedBuilder The embed builder to use for responses
+ * @returns An EmbedBuilder instance with the response
+ */
+async function handleLogsConfig(
+  interaction: ChatInputCommandInteraction,
+  action: string,
+  embedBuilder: EmbedBuilderFunction
+): Promise<EmbedBuilder> {
+  if (!botSettings) {
+    throw new Error("Bot settings service is unavailable");
+  }
+
+  const guildId = interaction.guildId ?? "";
+
+  if (action === "reset") {
+    return await handleApiError(
+      "Failed to reset log channel configuration",
+      async () => {
+        if (!botSettings) {
+          throw new Error("Bot settings service is unavailable");
+        }
+        await botSettings.removeSetting(guildId, "LOGCHANNEL");
+        return embedBuilder("Configuration Updated", statusType.success, {
+          description: "Log channel has been reset to default value",
+        });
+      },
+      {
+        context: "Config Command - Reset Log Channel",
+        reportAtSeverity: ErrorSeverity.MEDIUM,
+      }
+    );
+  } else if (action === "set") {
+    const selectedChannel = interaction.options.getChannel("channel", true);
+
+    return await handleApiError(
+      "Failed to update log channel configuration",
+      async () => {
+        if (!botSettings) {
+          throw new Error("Bot settings service is unavailable");
+        }
+        await botSettings.setSetting(guildId, "LOGCHANNEL", selectedChannel.id);
+        return embedBuilder("Configuration Updated", statusType.success, {
+          description: `Log channel has been set to <#${selectedChannel.id}>`,
+        });
+      },
+      {
+        context: "Config Command - Set Log Channel",
+        reportAtSeverity: ErrorSeverity.MEDIUM,
+      }
+    );
+  } else {
+    return embedBuilder("Invalid Action", statusType.error, {
+      description: "Unknown log configuration action requested",
+    });
+  }
+}
+
+/**
+ * Handle behaviour configuration subcommands
+ * @param interaction The interaction that triggered this command
+ */
+async function handleBehaviourConfig(
+  interaction: ChatInputCommandInteraction,
+  action: string,
+  embedBuilder: EmbedBuilderFunction
+): Promise<EmbedBuilder> {
+  if (!botSettings) {
+    throw new Error("Bot settings service is unavailable");
+  }
+
+  const guildId = interaction.guildId ?? "";
+
+  if (action === "reset") {
+    return await handleApiError(
+      "Failed to reset thread behavior configuration",
+      async () => {
+        await botSettings?.removeSetting(guildId, "BEHAVIOUR");
+        return embedBuilder("Configuration Updated", statusType.success, {
+          description: "Thread behavior has been reset to default value",
+        });
+      },
+      {
+        context: "Config Command - Reset Behavior",
+        reportAtSeverity: ErrorSeverity.MEDIUM,
+      }
+    );
+  } else if (action === "set") {
+    const selectedBehavior = interaction.options.getString("behaviour", true);
+    const behaviorDescription =
+      selectedBehavior === "DEFAULT" ? "un-archive and keep active" : "un-archive only";
+
+    return await handleApiError(
+      "Failed to update thread behavior configuration",
+      async () => {
+        await botSettings?.setSetting(guildId, "BEHAVIOUR", selectedBehavior);
+        return embedBuilder("Configuration Updated", statusType.success, {
+          description: `Thread behavior has been set to "${behaviorDescription}"`,
+        });
+      },
+      {
+        context: "Config Command - Set Behavior",
+        reportAtSeverity: ErrorSeverity.MEDIUM,
+      }
+    );
+  } else {
+    return embedBuilder("Invalid Action", statusType.error, {
+      description: "Unknown behavior configuration action requested",
+    });
+  }
+}
+
+export default configCommand;

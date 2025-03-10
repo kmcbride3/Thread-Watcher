@@ -1,20 +1,77 @@
 import { logger } from "../index";
 
-// Track counts of different error types
-const invalidRequestLog: Record<string, number> = {
-  "401": 0, // Unauthorized
-  "403": 0, // Forbidden
-  "429": 0, // Rate Limited
-  "404": 0, // Not Found
-};
+/**
+ * Handle API errors with retry logic
+ * @param errorMessage The initial error message, or null if none
+ * @param fn The function to execute
+ * @param retries The number of retries to attempt
+ * @param retryDelay The delay between retries in ms
+ * @returns The result of the function
+ * @throws The last error encountered after retries are exhausted
+ */
+export async function handleApiError<T>(
+  errorMessage: string | null,
+  fn: () => Promise<T>,
+  retries = 2,
+  retryDelay = 1000
+): Promise<T> {
+  let lastError: Error | unknown;
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      const statusCode = getErrorStatusCode(error);
+
+      // Handle specific status codes
+      if (statusCode === 429) {
+        const retryAfter = getRetryAfter(error) || retryDelay * Math.pow(2, attempt);
+        logger.warn(
+          `Rate limited by API, waiting ${retryAfter}ms before retry ${attempt + 1}/${retries}`
+        );
+        await sleep(retryAfter);
+        continue;
+      }
+
+      // Don't retry these errors
+      if (statusCode === 401 || statusCode === 403 || statusCode === 404) {
+        logger.error(
+          `API Error ${statusCode}: ${errorMessage || ""} ${error instanceof Error ? error.message : String(error)}`
+        );
+        throw error;
+      }
+
+      // Retry server errors and network errors
+      if (attempt < retries) {
+        const delay = retryDelay * Math.pow(2, attempt);
+        logger.warn(
+          `API error (attempt ${attempt + 1}/${retries}): ${error instanceof Error ? error.message : String(error)}`
+        );
+        await sleep(delay);
+      } else {
+        if (errorMessage) {
+          logger.error(
+            `${errorMessage}: ${error instanceof Error ? error.message : String(error)}`
+          );
+        } else {
+          logger.error(
+            `API error after ${retries + 1} attempts: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+        throw error;
+      }
+    }
+  }
+
+  throw lastError;
+}
 
 /**
- * Extract HTTP status code from errors
+ * Get the HTTP status code from an error if available
  */
-function getStatusCode(error: unknown): number | null {
-  // Handle Discord.js API errors
+function getErrorStatusCode(error: unknown): number | null {
   if (error && typeof error === "object") {
-    // Check for common error formats
     if ("status" in error && typeof error.status === "number") {
       return error.status;
     }
@@ -29,77 +86,29 @@ function getStatusCode(error: unknown): number | null {
 }
 
 /**
- * Handle API errors with retry logic and status code tracking
- * @param error The error that occurred
- * @param retryFn A function to retry the operation
- * @param maxRetries Maximum number of retry attempts
- * @param delay Delay between retries in ms
- * @returns Promise that resolves with the retry result or rejects if all retries fail
+ * Get retry-after value from error if available
  */
-export async function handleApiError<T>(
-  error: unknown,
-  retryFn: () => Promise<T>,
-  maxRetries = 1,
-  initialDelay = 1000
-): Promise<T> {
-  // Check for specific status codes and track them
-  const statusCode = getStatusCode(error);
-  let currentDelay = initialDelay;
-
-  if (statusCode) {
-    const statusString = statusCode.toString();
-    if (statusString in invalidRequestLog) {
-      invalidRequestLog[statusString]++;
-
-      switch (statusCode) {
-        case 401:
-          logger.warn("API Error: Unauthorized. Check your bot token.");
-          break;
-        case 403:
-          logger.warn("API Error: Forbidden. The bot doesn't have the required permissions.");
-          break;
-        case 429:
-          logger.warn("API Error: Rate limited. Waiting before retry.");
-          currentDelay = Math.max(currentDelay, 5000);
-          break;
-        case 404:
-          logger.warn("API Error: Resource not found. It may have been deleted.");
-          break;
-        default:
-          logger.warn(
-            `API Error (${statusCode}): ${error instanceof Error ? error.message : String(error)}`
-          );
-      }
-    } else {
-      logger.warn(
-        `API Error (${statusCode}): ${error instanceof Error ? error.message : String(error)}`
-      );
+function getRetryAfter(error: unknown): number | null {
+  if (error && typeof error === "object") {
+    if ("retryAfter" in error && typeof error.retryAfter === "number") {
+      return error.retryAfter;
     }
-  } else {
-    // Generic error handling for non-HTTP errors
-    logger.warn(`API Error: ${error instanceof Error ? error.message : String(error)}`);
+    if ("retry-after" in error && typeof error["retry-after"] === "number") {
+      return error["retry-after"];
+    }
+    if ("headers" in error && typeof error.headers === "object" && error.headers) {
+      const headers = error.headers as Record<string, unknown>;
+      if ("retry-after" in headers && typeof headers["retry-after"] === "string") {
+        return parseInt(headers["retry-after"], 10) * 1000;
+      }
+    }
   }
-
-  if (maxRetries <= 0 || statusCode === 404) {
-    throw error;
-  }
-  await new Promise((resolve) => setTimeout(resolve, currentDelay));
-
-  try {
-    logger.debug(`Retrying operation (${maxRetries} attempts remaining)`);
-    return await retryFn();
-  } catch (retryError) {
-    return handleApiError(retryError, retryFn, maxRetries - 1, currentDelay * 1.5);
-  }
+  return null;
 }
 
 /**
- * Log stats about invalid requests
+ * Sleep for a specified duration
  */
-export const logInvalidRequests = () => {
-  const logString = Object.entries(invalidRequestLog)
-    .map(([code, count]) => `${code}: ${count}`)
-    .join(", ");
-
-  logger.info(`Invalid request stats: ${logString || "None"}`);
-};
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}

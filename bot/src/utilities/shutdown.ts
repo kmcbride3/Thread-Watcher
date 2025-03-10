@@ -33,6 +33,81 @@ export enum AppState {
 }
 
 /**
+ * Safely log a message during shutdown
+ * Works even when regular logger isn't available
+ */
+const safeShutdownLog = (level: string, message: string): void => {
+  // Try to use the logger if it's available
+  if (
+    typeof logger !== "undefined" &&
+    logger &&
+    typeof logger[level as keyof typeof logger] === "function"
+  ) {
+    try {
+      const logFunction = logger[level as keyof typeof logger] as unknown as (msg: string) => void;
+      logFunction(message);
+      return;
+    } catch {
+      // Fall back to console if logger method fails
+    }
+  }
+
+  const timestamp = new Date().toISOString();
+  if (level === "error") {
+    console.error(`${timestamp} [ERROR] ${message}`);
+  } else if (level === "warn") {
+    console.warn(`${timestamp} [WARN] ${message}`);
+  } else {
+    console.log(`${timestamp} [${level.toUpperCase()}] ${message}`);
+  }
+};
+
+/**
+ * Fallback exit function when shutdownManager isn't available
+ * This provides a consistent way to exit even during initialization
+ *
+ * @param exitCode The exit code to use when terminating the process
+ * @param reason The reason for shutdown
+ * @param delayMs Optional delay before exiting (default 200ms)
+ */
+export function exitProcess(
+  exitCode = 0,
+  reason = "Requested shutdown",
+  delayMs = 200
+): Promise<never> {
+  try {
+    // Avoid redundant exit messages - only log if not already part of a clean shutdown sequence
+    if (!reason.includes("completed in") && !reason.includes("(completed")) {
+      safeShutdownLog("info", `Process ${process.pid} exiting with code ${exitCode}: ${reason}`);
+    }
+
+    setTimeout(() => {
+      try {
+        // skipcq: JS-0263
+        process.exit(exitCode);
+      } catch (e) {
+        // This should never happen, but just in case
+        console.error("Failed to exit process:", e);
+        // Force exit with original exit code
+        process.kill(process.pid, "SIGKILL");
+      }
+    }, delayMs);
+
+    return new Promise((resolve) => {
+      // This will never be called because process.exit terminates execution - skipcq: JS-0263
+      setTimeout(() => resolve(process.exit(exitCode)), delayMs + 100);
+    });
+  } catch (e) {
+    // Last resort if everything else fails
+    console.error("Critical error during exit:", e);
+    process.kill(process.pid, "SIGKILL");
+
+    // This will never be reached, just for TypeScript
+    throw new Error("Process termination failed");
+  }
+}
+
+/**
  * Handles graceful shutdown of the application
  */
 export class ShutdownManager {
@@ -133,9 +208,7 @@ export class ShutdownManager {
     // If already shutting down, don't start again
     if (this.isShuttingDown) {
       logger.warn("Shutdown already in progress");
-      return new Promise((resolve) => {
-        setTimeout(() => resolve(process.exit(exitCode)), 5000);
-      });
+      return exitProcess(exitCode, "Shutdown already in progress (duplicate request)");
     }
 
     this.shutdownStartTime = Date.now();
@@ -146,20 +219,19 @@ export class ShutdownManager {
     // Set a safety timeout to force exit if cleanup takes too long
     this.shutdownTimeout = setTimeout(() => {
       logger.warn("Shutdown taking too long - forcing exit");
-      process.exit(exitCode);
+      exitProcess(exitCode, "Shutdown timeout exceeded");
     }, 30000); // 30 second safety timeout
 
     try {
       // Stop accepting new connections/requests if applicable
-      // This would depend on your app architecture
-      logger.info("Stopping new connections");
+      logger.debug("Stopping new connections");
 
       // Disconnect the Discord client
       if (this.client?.isReady()) {
-        logger.info("Logging out from Discord...");
+        logger.debug("Logging out from Discord...");
         try {
           await this.client.destroy();
-          logger.info("Discord client destroyed successfully");
+          logger.debug("Discord client destroyed successfully");
         } catch (error) {
           logger.error(`Error destroying Discord client: ${error}`);
         }
@@ -183,7 +255,7 @@ export class ShutdownManager {
         const tasksInGroup = sortedTasks.filter((task) => task.priority === priorityValue);
 
         if (tasksInGroup.length > 0) {
-          logger.info(`Running ${priorityName} priority shutdown tasks...`);
+          logger.debug(`Running ${priorityName} priority shutdown tasks...`);
 
           // Run tasks in this priority group
           await Promise.allSettled(
@@ -207,6 +279,7 @@ export class ShutdownManager {
                 return result;
               } catch (error) {
                 logger.error(`Error in shutdown task ${task.name}: ${error}`);
+                return undefined;
               }
             })
           );
@@ -214,7 +287,7 @@ export class ShutdownManager {
       }
 
       const shutdownDuration = Date.now() - this.shutdownStartTime;
-      logger.info(`Shutdown tasks completed in ${shutdownDuration}ms with exit code ${exitCode}`);
+      logger.done(`Shutdown complete in ${shutdownDuration}ms`);
 
       // Clear safety timeout since we're exiting normally
       if (this.shutdownTimeout) {
@@ -222,14 +295,7 @@ export class ShutdownManager {
         this.shutdownTimeout = null;
       }
 
-      // Flush logs and exit
-      const flushDelay = process.env.NODE_ENV === "production" ? 1000 : 500;
-      logger.info(`Exiting process in ${flushDelay}ms...`);
-      setTimeout(() => process.exit(exitCode), flushDelay);
-
-      return new Promise((resolve) => {
-        setTimeout(() => resolve(process.exit(exitCode)), flushDelay + 100);
-      });
+      return exitProcess(exitCode, `${reason} (completed in ${shutdownDuration}ms)`);
     } catch (error) {
       logger.error(`Unhandled error during shutdown: ${error}`);
 
@@ -239,7 +305,7 @@ export class ShutdownManager {
         this.shutdownTimeout = null;
       }
 
-      process.exit(1);
+      return exitProcess(1, `Error during shutdown: ${error}`);
     }
   }
 
@@ -247,18 +313,50 @@ export class ShutdownManager {
    * Set up handlers for process signals and uncaught exceptions
    */
   private setupProcessHandlers(): void {
+    // Using a flag to prevent multiple signal handlers from triggering duplicate shutdowns
+    let shutdownInitiated = false;
+
     // Handle termination signals using named handlers
     const handleSigInt = () => {
+      if (shutdownInitiated) {
+        logger.debug("Ignoring duplicate SIGINT signal - shutdown already in progress");
+        return;
+      }
+
+      // Skip handling SIGINT in shard processes - let parent coordinate
+      if (process.env.IS_SHARD === "true") {
+        logger.debug("SIGINT received in shard - waiting for parent to coordinate shutdown");
+        return;
+      }
+
+      shutdownInitiated = true;
       logger.info("Received SIGINT signal");
       this.shutdown(0, "SIGINT received");
     };
 
     const handleSigTerm = () => {
+      if (shutdownInitiated) {
+        logger.debug("Ignoring duplicate SIGTERM signal - shutdown already in progress");
+        return;
+      }
+
+      // Skip handling SIGTERM in shard processes - let parent coordinate
+      if (process.env.IS_SHARD === "true") {
+        logger.debug("SIGTERM received in shard - waiting for parent to coordinate shutdown");
+        return;
+      }
+
+      shutdownInitiated = true;
       logger.info("Received SIGTERM signal");
       this.shutdown(0, "SIGTERM received");
     };
 
     const handleUncaughtException = (error: Error) => {
+      if (shutdownInitiated) {
+        logger.error(`Additional uncaught exception during shutdown: ${error.message}`);
+        return;
+      }
+      shutdownInitiated = true;
       logger.error(`Uncaught exception: ${error.message}`);
       if (error.stack) {
         logger.error(`Stack trace: ${error.stack}`);
@@ -277,6 +375,8 @@ export class ShutdownManager {
     process.on("SIGTERM", handleSigTerm);
     process.on("uncaughtException", handleUncaughtException);
     process.on("unhandledRejection", handleUnhandledRejection);
+
+    logger.debug("Signal handlers initialized in shutdown manager");
   }
 }
 

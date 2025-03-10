@@ -1,97 +1,129 @@
-import { ChatInputCommandInteraction, SlashCommandBuilder, MessageFlagsBitField } from "discord.js";
+import { ChatInputCommandInteraction, MessageFlagsBitField, SlashCommandBuilder } from "discord.js";
+import { commands } from "../../bot";
+import { getShardManager } from "../../index";
 import { Command, statusType } from "../../interfaces/command";
+import { ErrorSeverity, handleApiError, handleCommandError } from "../../utilities/errorSystem";
+import loadCommands from "../../utilities/loadCommands";
+import { rateLimitManager } from "../../utilities/rateLimitManager";
 import reloadCommands from "../../utilities/routines/reloadCommands";
-import { isMainProcess } from "../../utilities/processState";
-import { getConfig } from "../../utilities/cnf/index";
 
-const config = getConfig();
+const reloadCommand: Command = {
+  run: async (interaction: ChatInputCommandInteraction, buildBaseEmbed): Promise<void> => {
+    try {
+      // Always immediately defer this command since it can take time
+      await interaction.deferReply({
+        flags: [MessageFlagsBitField.Flags.Ephemeral],
+      });
 
-const reload: Command = {
-  run: async (interaction: ChatInputCommandInteraction, buildBaseEmbed) => {
-    const all = interaction.options.getBoolean("globally");
+      await rateLimitManager.waitForRateLimit("admin/reload");
 
-    // Check if the user is an owner
-    const isOwner = config.owners.includes(interaction.user.id);
+      const globally = interaction.options.getBoolean("globally") ?? false;
 
-    // Check if the command is being run on the dev server
-    const isDevServer = config.devServer === interaction.guildId;
+      if (globally) {
+        const shardManager = getShardManager();
 
-    let embed;
-
-    if (all) {
-      if (reload.gatekeeping?.ownerOnly && !isOwner) {
-        embed = buildBaseEmbed("Permission denied", statusType.error, {
-          description: "You do not have permission to run this command globally.",
-        });
-      } else if (reload.gatekeeping?.devServerOnly && !isDevServer) {
-        embed = buildBaseEmbed("Invalid server", statusType.error, {
-          description: "This command can only be run on the development server.",
-        });
-      } else if (!isMainProcess()) {
-        // Send a message to the main process to execute the command
-        if (process.send) {
-          process.send({ op: "RELOAD_COMMANDS", globally: true });
-        } else {
-          embed = buildBaseEmbed("Unable to forward command to main", statusType.error, {
-            description: "Forwarding command to the main process for execution has failed.",
+        if (!shardManager) {
+          await interaction.editReply({
+            embeds: [
+              buildBaseEmbed("Global Reload Failed", statusType.error, {
+                description: "Shard manager is not accessible. Try reloading locally instead.",
+              }),
+            ],
           });
+          return;
         }
-        embed = buildBaseEmbed("Command forwarded to main process", statusType.info, {
-          description: "The command has been forwarded to the main process for execution.",
-        });
-      } else if (!interaction.client.shard) {
-        // If sharding is not enabled, call reloadCommands normally
-        await reloadCommands();
-        embed = buildBaseEmbed("Commands reloaded", statusType.success);
-      } else {
-        embed = buildBaseEmbed("Reloading commands on all shards...", statusType.info);
-        await interaction.reply({
-          embeds: [embed],
-          flags: [MessageFlagsBitField.Flags.Ephemeral],
-        });
 
-        try {
-          const results = await interaction.client.shard.broadcastEval(async (client) => {
-            const { default: reloadCommands } = await import(
-              "../../utilities/routines/reloadCommands"
-            );
+        await handleApiError(
+          "Failed to broadcast reload command",
+          async () => {
             await reloadCommands();
-            return `Shard ${client.shard?.ids[0]} reloaded commands.`;
-          });
 
-          embed = buildBaseEmbed("Commands reloaded on all shards", statusType.success, {
-            description: results.join("\n"),
-          });
-          await interaction.editReply({ embeds: [embed] });
-          return;
-        } catch (error) {
-          embed = buildBaseEmbed("Failed to reload commands on all shards", statusType.error, {
-            description: `Error: ${error instanceof Error ? error.message : String(error)}`,
-          });
-          await interaction.editReply({ embeds: [embed] });
-          return;
-        }
+            const results = await shardManager.broadcastEval(async (client) => {
+              const { default: reloadCommands } = await import(
+                "../../utilities/routines/reloadCommands"
+              );
+              await reloadCommands();
+              return `Shard ${client.shard?.ids[0]} reloaded commands successfully`;
+            });
+
+            return results;
+          },
+          {
+            context: "Global Command Reload Operation",
+            reportAtSeverity: ErrorSeverity.HIGH,
+          }
+        );
+
+        await interaction.editReply({
+          embeds: [
+            buildBaseEmbed("Commands Reloaded Globally", statusType.success, {
+              description: "All commands have been reloaded across all shards.",
+            }),
+          ],
+        });
+      } else {
+        const result = await handleApiError(
+          "Failed to reload commands",
+          async () => {
+            Object.keys(require.cache).forEach((key) => {
+              if (key.includes("/commands/")) {
+                Reflect.deleteProperty(require.cache, key);
+              }
+            });
+
+            const loadedCommands = await loadCommands();
+
+            const oldCommandCount = commands.size;
+
+            commands.clear();
+            for (const [key, command] of loadedCommands.entries()) {
+              commands.set(key, command);
+            }
+
+            return {
+              oldCount: oldCommandCount,
+              newCount: commands.size,
+              commandNames: [...commands.keys()],
+            };
+          },
+          {
+            context: "Local Command Reload Operation",
+            retries: 0, // No retries for reload
+            reportAtSeverity: ErrorSeverity.HIGH,
+          }
+        );
+
+        await interaction.editReply({
+          embeds: [
+            buildBaseEmbed("Commands Reloaded", statusType.success, {
+              description: "All commands have been reloaded on this shard.",
+              fields: [
+                { name: "Command Count", value: `${result.newCount} commands loaded` },
+                { name: "Available Commands", value: result.commandNames.join(", ") },
+              ],
+            }),
+          ],
+        });
       }
-    } else {
-      await reloadCommands();
-      embed = buildBaseEmbed("Commands reloaded", statusType.success);
+    } catch (error) {
+      await handleCommandError(interaction, error, buildBaseEmbed, {
+        errorTitle: "Reload Failed",
+        errorDescription: "Failed to reload commands. Check the logs for details.",
+        context: "Reload Command",
+        reportAtSeverity: ErrorSeverity.HIGH,
+      });
     }
-
-    await interaction.reply({
-      embeds: [embed],
-      flags: [MessageFlagsBitField.Flags.Ephemeral],
-    });
   },
   gatekeeping: {
     ownerOnly: true,
-    devServerOnly: true,
+    devServerOnly: false,
   },
   data: new SlashCommandBuilder()
     .setName("reload")
-    .setDescription("use this command to reload commands")
+    .setDescription("Reload all commands")
     .addBooleanOption((o) =>
-      o.setName("globally").setDescription("do you want to reload commands on all shards?")
+      o.setName("globally").setDescription("Reload commands on all shards").setRequired(false)
     ),
 };
 
-export default reload;
+export default reloadCommand;

@@ -70,4 +70,6 @@ export default function scheduleBackups(database: Database, logger: Log76) {
       }
     }
   });
+
+  return null;
 }

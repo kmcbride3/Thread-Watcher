@@ -1,5 +1,7 @@
 import { Events, ThreadChannel } from "discord.js";
 import { db, logger } from "../index";
+import { ErrorSeverity, handleApiError } from "../utilities/errorSystem";
+import { rateLimitManager } from "../utilities/rateLimitManager";
 import {
   addThread,
   bumpAutoTime,
@@ -7,18 +9,35 @@ import {
   removeThread,
   setArchive,
 } from "../utilities/threadActions";
-import { threadShouldBeWatched } from "./threadCreate";
 import { threadManager } from "../utilities/threadManager";
+import { isThreadChannel, threadShouldBeWatched } from "../utilities/threadUtils";
 
 export default {
   name: Events.ThreadUpdate,
   once: false,
   async execute(oldThread: ThreadChannel, newThread: ThreadChannel) {
     try {
+      if (!isThreadChannel(newThread)) {
+        logger.warn(`ThreadUpdate received non-thread channel: ${(newThread as ThreadChannel).id}`);
+        return null;
+      }
+
+      await rateLimitManager.waitForRateLimit(`guilds/${newThread.guildId}/threads`);
+
       // Check for auto-watch rules
-      const auto =
-        (await db.getChannels(newThread.guildId)).find((t) => t.id === newThread.parentId) ||
-        (await db.getChannels(newThread.guildId)).find((t) => t.id === newThread.parent?.parentId);
+      const getAutoRules = async () => {
+        return (
+          (await db.getChannels(newThread.guildId)).find((t) => t.id === newThread.parentId) ||
+          (await db.getChannels(newThread.guildId)).find((t) => t.id === newThread.parent?.parentId)
+        );
+      };
+
+      const auto = await handleApiError(null, getAutoRules, {
+        retries: 2,
+        retryDelay: 1000,
+        reportAtSeverity: ErrorSeverity.MEDIUM,
+        context: `ThreadUpdate:getAutoRules(${newThread.id})`,
+      });
 
       const watchedThreads = threadManager.getWatchedThreads();
 
@@ -26,7 +45,18 @@ export default {
         // Get current watched status
         const isWatched = watchedThreads.has(newThread.id);
 
-        if (await threadShouldBeWatched(auto, newThread)) {
+        const shouldWatch = await handleApiError(
+          null,
+          () => threadShouldBeWatched(auto, newThread),
+          {
+            retries: 2,
+            retryDelay: 1000,
+            reportAtSeverity: ErrorSeverity.MEDIUM,
+            context: `ThreadUpdate:shouldWatch(${newThread.id})`,
+          }
+        );
+
+        if (shouldWatch) {
           // Thread should be watched per rules
           if (!isWatched) {
             const thread = watchedThreads.get(newThread.id);
@@ -103,5 +133,6 @@ export default {
       logger.error("Failed threadUpdate event (dump below)");
       logger.error(String(err));
     }
+    return null;
   },
 };

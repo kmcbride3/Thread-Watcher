@@ -1,8 +1,9 @@
-import { readdirSync, statSync } from "fs";
-import { Command } from "../interfaces/command";
-import { logger } from "../index";
-import path from "path";
 import { Collection } from "discord.js";
+import { readdirSync, statSync } from "fs";
+import path from "path";
+import { logger } from "../index";
+import { Command } from "../interfaces/command";
+import { ErrorSeverity, handleApiError } from "./errorSystem";
 
 export default async function loadCommands(
   baseDir = "../commands/",
@@ -10,55 +11,71 @@ export default async function loadCommands(
 ): Promise<Collection<string, Command>> {
   const commands = new Collection<string, Command>();
 
-  try {
-    const p = path.join(__dirname, baseDir + (dirDive ? dirDive : ""));
-    logger.debug(`Loading commands from: ${p}`);
+  const loadCommandsFromDirectory = async (dirPath: string, recursionPath = ""): Promise<void> => {
+    try {
+      const fullPath = path.join(dirPath, recursionPath);
+      logger.debug(`Loading commands from: ${fullPath}`);
 
-    for (const file of readdirSync(p)) {
-      try {
-        const filePath = path.join(p, file);
-        const fileStat = statSync(filePath);
+      const files = readdirSync(fullPath);
 
-        if (fileStat.isFile() && file.endsWith(".js")) {
-          const modulePath = path.join(baseDir, dirDive, file);
-          const commandModule = await import(modulePath);
+      await Promise.all(
+        files.map(async (file) => {
+          const filePath = path.join(fullPath, file);
+          const fileStat = statSync(filePath);
 
-          const cmdReq = commandModule.default;
+          if (fileStat.isFile() && file.endsWith(".js")) {
+            return handleApiError(
+              null,
+              async () => {
+                const modulePath = path.join(baseDir, recursionPath, file);
+                const commandModule = await import(modulePath);
+                const cmdReq = commandModule.default;
 
-          if (!cmdReq) {
-            logger.warn(`"${baseDir}${dirDive}${file}" command does not export a default object`);
-            continue;
-          }
+                if (!cmdReq) {
+                  logger.warn(`"${modulePath}" command does not export a default object`);
+                  return;
+                }
 
-          // Extract command properties
-          const { run, data, gatekeeping, autocomplete, externalOptions } = cmdReq;
+                // Extract command properties
+                const { run, data, gatekeeping, autocomplete, externalOptions } = cmdReq;
 
-          if (!run || !data) {
-            logger.warn(
-              `"${baseDir}${dirDive}${file}" is not an acceptable command file. Missing: ${run ? "" : 'function "run"'} ${data ? "" : 'property "data"'}`
+                if (!run || !data) {
+                  logger.warn(
+                    `"${modulePath}" is not an acceptable command file. Missing: ${run ? "" : 'function "run"'} ${data ? "" : 'property "data"'}`
+                  );
+                  return;
+                }
+
+                // Store command with all required properties
+                commands.set(file.split(".")[0], {
+                  run,
+                  data,
+                  gatekeeping,
+                  autocomplete,
+                  externalOptions,
+                });
+              },
+              {
+                retries: 2,
+                retryDelay: 500,
+                reportAtSeverity: ErrorSeverity.HIGH,
+                context: `Command Loading (${file})`,
+              }
             );
-          } else {
-            // Store command with all required properties
-            commands.set(file.split(".")[0], {
-              run,
-              data,
-              gatekeeping,
-              autocomplete,
-              externalOptions,
-            });
+          } else if (fileStat.isDirectory()) {
+            // Recursively load commands from subdirectories
+            return await loadCommandsFromDirectory(dirPath, path.join(recursionPath, file));
           }
-        } else if (fileStat.isDirectory()) {
-          // Recursively load commands from subdirectories
-          const subCommands = await loadCommands(baseDir, dirDive + `${file}/`);
-          subCommands.forEach((value, key) => commands.set(key, value));
-        }
-      } catch (error) {
-        logger.error(`Failed to load command ${file}: ${error}`);
-      }
+          return null;
+        })
+      );
+    } catch (error) {
+      logger.error(`Failed to read commands directory: ${error}`);
     }
-  } catch (error) {
-    logger.error(`Failed to read commands directory: ${error}`);
-  }
+  };
+
+  const commandsPath = path.join(__dirname, baseDir);
+  await loadCommandsFromDirectory(commandsPath, dirDive);
 
   return commands;
 }

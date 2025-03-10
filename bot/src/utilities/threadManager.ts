@@ -1,15 +1,18 @@
 import {
-  ThreadChannel,
-  GuildTextThreadCreateOptions,
-  Collection,
   ChannelType,
-  ThreadAutoArchiveDuration,
+  Collection,
+  GuildBasedChannel,
+  GuildTextThreadCreateOptions,
   REST,
+  ThreadAutoArchiveDuration,
+  ThreadChannel,
 } from "discord.js";
+import { db, logger } from "../index";
 import { WatchedThread } from "../interfaces/thread";
+import { handleApiError } from "./apiErrorHandler";
 import { getRestClient } from "./discordRest";
 import { rateLimitManager } from "./rateLimitManager";
-import { logger, db } from "../index";
+import { isThreadCapableChannel, isThreadChannel } from "./threadUtils";
 
 /**
  * Manages thread watching and unarchiving operations
@@ -86,17 +89,25 @@ export class ThreadManager {
 
   /**
    * Watch a thread to prevent auto-archiving
+   * @param thread The thread to watch
+   * @param server The server ID
    */
-  public watchThread(thread: ThreadChannel, server: string): void {
+  public watchThread(thread: ThreadChannel, server: string): boolean {
+    if (!isThreadChannel(thread)) {
+      logger.warn(`Attempted to watch a non-thread channel: ${(thread as ThreadChannel).id}`);
+      return false;
+    }
+
     const threadData: WatchedThread = {
       id: thread.id,
-      server: server,
+      server,
       watching: true,
-      dueArchive: this.calculateArchiveTime(thread),
+      dueArchive: ThreadManager.calculateArchiveTime(thread),
     };
 
     this.watchedThreads.set(thread.id, threadData);
     logger.trace(`Now watching thread ${thread.name} (${thread.id})`);
+    return true;
   }
 
   /**
@@ -134,6 +145,16 @@ export class ThreadManager {
       // Import client dynamically to avoid circular dependency
       const { client } = await import("../bot");
 
+      const targetChannel = await client.channels.fetch(channelId);
+      if (
+        !targetChannel ||
+        !("guildId" in targetChannel) ||
+        !isThreadCapableChannel(targetChannel as GuildBasedChannel)
+      ) {
+        logger.warn(`Cannot create thread in channel ${channelId}: not a thread-capable channel`);
+        return null;
+      }
+
       // Use the REST client directly for better control
       const rest = this.getRestClient();
 
@@ -147,7 +168,7 @@ export class ThreadManager {
         },
       })) as { id: string; headers: Record<string, string> };
 
-      if (response && response.id) {
+      if (response?.id) {
         // Update rate limit info from response headers
         if (response.headers) {
           rateLimitManager.updateFromHeaders(`/channels/${channelId}/threads`, response.headers);
@@ -178,17 +199,38 @@ export class ThreadManager {
       // Import client dynamically to avoid circular dependency
       const { client } = await import("../bot");
 
-      const thread = (await client.channels.fetch(threadId)) as ThreadChannel;
+      await rateLimitManager.waitForRateLimit(`channels/${threadId}`);
 
-      if (!thread) {
-        logger.warn(`Thread ${threadId} not found - removing from watched threads`);
+      const fetchChannel = async () => await client.channels.fetch(threadId);
+      const channel = await handleApiError(
+        `Failed to fetch channel ${threadId}`,
+        fetchChannel,
+        2,
+        1000
+      );
+
+      if (
+        !channel ||
+        !("guildId" in channel) ||
+        !isThreadChannel(channel as GuildBasedChannel | ThreadChannel)
+      ) {
+        logger.warn(`Channel ${threadId} is not a thread - removing from watched threads`);
         this.unwatchThread(threadId);
         return false;
       }
 
-      if (thread.archived) {
-        await thread.setArchived(false);
-        logger.debug(`Unarchived thread ${thread.name} (${thread.id})`);
+      const threadChannel = channel as ThreadChannel;
+      if (threadChannel.archived) {
+        await rateLimitManager.waitForRateLimit(`channels/${threadId}/archived`);
+
+        await handleApiError(
+          `Failed to unarchive thread ${threadId}`,
+          async () => await threadChannel.setArchived(false),
+          3,
+          1000
+        );
+
+        logger.debug(`Unarchived thread ${threadChannel.name} (${threadChannel.id})`);
         return true;
       }
 
@@ -205,46 +247,48 @@ export class ThreadManager {
    */
   private async checkThreads(): Promise<void> {
     const now = Date.now();
-    const threadsToCheck = new Array(...this.watchedThreads.entries());
+
+    const threadsToCheck = this.watchedThreads.filter(
+      (thread) => thread.watching && thread.dueArchive && thread.dueArchive < now + 300000
+    );
+
+    logger.debug(`Checking ${threadsToCheck.size} threads due for archive soon`);
 
     // Process in small batches to avoid rate limits
     const batchSize = 5;
-    for (let i = 0; i < threadsToCheck.length; i += batchSize) {
-      const batch = threadsToCheck.slice(i, i + batchSize);
+    let processedCount = 0;
 
-      await Promise.all(
-        batch.map(async ([id, threadData]) => {
-          if (!threadData.watching) return null;
-
-          // If thread is due for archiving soon (next 5 minutes), unarchive it
-          if (threadData.dueArchive && threadData.dueArchive < now + 300000) {
-            try {
-              const success = await this.unarchiveThread(id);
-
-              if (success) {
-                // Import client dynamically to avoid circular dependency
-                const { client } = await import("../bot");
-                // Update the due archive time
-                const thread = (await client.channels.fetch(id)) as ThreadChannel;
-                if (thread) {
-                  const updatedData = {
-                    ...threadData,
-                    dueArchive: this.calculateArchiveTime(thread),
-                  };
-                  this.watchedThreads.set(id, updatedData);
-                }
-              }
-            } catch (error) {
-              logger.error(`Failed to process thread ${id}: ${error}`);
-            }
-          }
-        })
-      );
-
-      // Add a small delay between batches
-      if (i + batchSize < threadsToCheck.length) {
+    for (const [id, threadData] of threadsToCheck) {
+      if (processedCount % batchSize === 0 && processedCount > 0) {
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
+
+      try {
+        const success = await this.unarchiveThread(id);
+
+        if (success) {
+          // Import client dynamically to avoid circular dependency
+          const { client } = await import("../bot");
+
+          // Update the due archive time with rate limit and error handling
+          await rateLimitManager.waitForRateLimit(`channels/${id}`);
+
+          const fetchThread = async () => (await client.channels.fetch(id)) as ThreadChannel;
+          const thread = await handleApiError(null, fetchThread, 2, 1000);
+
+          if (thread && isThreadChannel(thread)) {
+            const updatedData = {
+              ...threadData,
+              dueArchive: ThreadManager.calculateArchiveTime(thread),
+            };
+            this.watchedThreads.set(id, updatedData);
+          }
+        }
+      } catch (error) {
+        logger.error(`Failed to process thread ${id}: ${error}`);
+      }
+
+      processedCount++;
     }
   }
 
@@ -252,7 +296,7 @@ export class ThreadManager {
    * Calculate when a thread would be auto-archived
    * @private
    */
-  private calculateArchiveTime(thread: ThreadChannel): number | undefined {
+  private static calculateArchiveTime(thread: ThreadChannel): number | undefined {
     if (!thread.autoArchiveDuration) return undefined;
 
     // Convert minutes to milliseconds and add to last activity timestamp
@@ -265,20 +309,32 @@ export class ThreadManager {
    */
   public async loadThreadsFromDatabase(): Promise<void> {
     try {
-      // Get all threads from database directly
-      const threads = await db.getAllWatchedThreads();
+      // Wait for rate limits before database operation
+      await rateLimitManager.waitForRateLimit("db/threads");
+
+      const threads = await handleApiError(
+        "Failed to load threads from database",
+        async () => await db.getAllWatchedThreads(),
+        3,
+        1000
+      );
 
       // Clear existing collection
       this.watchedThreads.clear();
 
       // Add to local collection
-      for (const thread of threads) {
-        this.watchedThreads.set(thread.id, {
-          id: thread.id,
-          server: thread.server,
-          watching: thread.watching,
-          dueArchive: thread.dueArchive,
-        });
+      if (threads && threads.length > 0) {
+        this.watchedThreads = new Collection(
+          threads.map((thread) => [
+            thread.id,
+            {
+              id: thread.id,
+              server: thread.server,
+              watching: thread.watching,
+              dueArchive: thread.dueArchive,
+            },
+          ])
+        );
       }
 
       logger.info(`Loaded ${this.watchedThreads.size} watched threads from database`);

@@ -51,6 +51,7 @@ const searchShard = async() => {
         console.error("API error:", e);
         showError("Failed to connect to API. Please try again later.");
     }
+    return null;
 };
 
 const icons = {
@@ -92,6 +93,23 @@ const safeLog = (level, message, data = null) => {
     } else {
         console.log(message, data ? sanitizeObject(data) : '');
     }
+};
+
+const handleIcons = () => {
+    const iconElements = document.querySelectorAll('[data-icon]');
+    iconElements.forEach(el => {
+        const iconName = el.getAttribute('data-icon');
+        if (icons[iconName]) {
+            const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+            svg.setAttribute("viewBox", "0 0 24 24");
+            
+            const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+            path.setAttribute("d", icons[iconName]);
+            
+            svg.appendChild(path);
+            el.appendChild(svg);
+        }
+    });
 };
 
 const handleStats = async () => {
@@ -160,10 +178,10 @@ const handleStats = async () => {
 
             for(const shard of data.shards) {
                 const tr = document.createElement("tr")
-                const [ id, status, guildCount, uptime ] = [ document.createElement("td"),  document.createElement("td"), document.createElement("td"), document.createElement("td") ]
+                const [ id, status, guildCountCell, uptime ] = [ document.createElement("td"),  document.createElement("td"), document.createElement("td"), document.createElement("td") ]
                 id.innerText = shard.id
                 status.innerHTML = createWsStatus(shard.status)
-                guildCount.innerText = shard.guilds
+                guildCountCell.innerText = shard.guilds
                 uptime.innerText = getUptimeText(shard.uptime)
                 tr.append(id, status, guildCount, uptime)
                 table.appendChild(tr)
@@ -174,6 +192,8 @@ const handleStats = async () => {
     } catch (error) {
         safeLog('error', 'Failed to fetch stats:', { message: error.message });
     }
+
+    return null;
 }
 
 const checkTestimonials = (el) => {
@@ -188,11 +208,14 @@ const checkTestimonials = (el) => {
     const isScrolledToTop = isScrolledToBottom ? false : el.scrollTop === 0;
     el.classList.toggle('top-overflow', !isScrolledToBottom);
     el.classList.toggle('bottom-overflow', !isScrolledToTop);
+
+    return null;
 };
 
 document.addEventListener("DOMContentLoaded", () => {
     handleIcons();
     handleStats();
+    searchShard();
     
     const testimonials = document.querySelector(".testimonials");
     if (testimonials) {

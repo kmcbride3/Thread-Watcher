@@ -1,635 +1,786 @@
 import {
-  ChatInputCommandInteraction,
-  PermissionFlagsBits,
-  EmbedBuilder,
-  SlashCommandBuilder,
-  ThreadChannel,
-  CategoryChannel,
-  TextChannel,
-  ForumChannel,
-  NewsChannel,
-  FetchedThreads,
-  FetchedThreadsMore,
-  MediaChannel,
-  Role,
-  GuildForumTag,
   ActionRowBuilder,
-  StringSelectMenuBuilder,
-  ButtonStyle,
-  ButtonInteraction,
-  StringSelectMenuOptionBuilder,
-  AnySelectMenuInteraction,
+  ApplicationCommandOptionType,
   ButtonBuilder,
+  ButtonInteraction,
+  ButtonStyle,
+  CategoryChannel,
+  ChatInputCommandInteraction,
+  CollectedInteraction,
+  EmbedBuilder,
+  ForumChannel,
+  GuildBasedChannel,
+  GuildForumTag,
+  InteractionCollector,
   MessageFlagsBitField,
-  CacheType,
+  PermissionFlagsBits,
+  Role,
+  SlashCommandBuilder,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
+  ThreadChannel,
 } from "discord.js";
-import { Command, statusType, baseEmbedOptions } from "../../interfaces/command";
-import { db } from "../../index";
 import { threads as threadsList } from "../../bot";
-import { threadShouldBeWatched } from "../../events/threadCreate";
-import { strToRegex, validRegex } from "../../utilities/regex";
-import { addThread, dueArchiveTimestamp, removeThread } from "../../utilities/threadActions";
 import TwButton from "../../components/Button";
 import TwModal from "../../components/Modal";
-import Chunkable from "../../utilities/Chunkable";
 import TwStringSelect from "../../components/StringSelect";
+import { db, logger } from "../../index";
+import { Command, statusType } from "../../interfaces/command";
+import Chunkable from "../../utilities/Chunkable";
+import { ErrorSeverity, handleApiError, handleCommandError } from "../../utilities/errorSystem";
+import { rateLimitManager } from "../../utilities/rateLimitManager";
+import { strToRegex, validRegex } from "../../utilities/regex";
+import { addThread, dueArchiveTimestamp, removeThread } from "../../utilities/threadActions";
+import {
+  getAllThreads,
+  isThreadCapableChannel,
+  THREAD_CAPABLE_CHANNEL_TYPES,
+  threadShouldBeWatched,
+} from "../../utilities/threadUtils";
 
-type threadContainers = TextChannel | NewsChannel | ForumChannel | MediaChannel;
+type ActionType = "watch" | "unwatch" | "toggle" | "inaction";
 
-interface actionsList {
+interface ActionsList {
   added: ThreadChannel[];
   removed: ThreadChannel[];
   noAction: ThreadChannel[];
 }
 
-type actionType = "watch" | "unwatch" | "toggle" | "inaction";
-
-interface filterTypes {
+interface FilterTypes {
   roles: (Role | undefined | null)[];
   tags: (GuildForumTag | undefined)[];
   regex: string;
 }
 
-const getThreads = async function (channel: threadContainers): Promise<ThreadChannel[]> {
-  const threads: ThreadChannel[] = [];
-  const promises: Promise<FetchedThreads | FetchedThreadsMore>[] = [];
+const activeCollectors = new Set<InteractionCollector<CollectedInteraction>>();
 
-  // Fetch all the active threads for the channel
-  promises.push(channel.threads.fetchActive());
-
-  // Fetch all the archived threads for the channel. This requires the bot has "ReadMessageHistory"
-  if (
-    channel.guild.members.me &&
-    channel.permissionsFor(channel.guild.members.me).has(PermissionFlagsBits.ReadMessageHistory)
-  )
-    promises.push(channel.threads.fetchArchived());
-
-  const resolvedThreads = await Promise.all(promises).catch(() => {
-    return [];
-  });
-
-  // for some reason this needs to be done as ALL threads in the server are returned???
-  // I've no clue why as docs specify that channel.threads.fetch<Active|Archived>() only returns threads of that channel
-  for (const resolved of resolvedThreads)
-    threads.push(...resolved.threads.filter((t) => t.parentId === channel.id).values());
-
-  return threads;
-};
-
-const handleThreadActioning = async (
+/**
+ * Process threads according to selected action and filters
+ */
+async function handleThreadActioning(
   threads: ThreadChannel[],
-  action: actionType,
-  filters: filterTypes
-): Promise<actionsList> => {
-  const rv: actionsList = {
+  action: ActionType,
+  filters: FilterTypes
+): Promise<ActionsList> {
+  const result: ActionsList = {
     added: [],
     removed: [],
     noAction: [],
   };
 
-  for (const thread of threads) {
-    if (
-      await threadShouldBeWatched(
-        {
-          id: thread.id,
-          server: thread.guildId,
-          regex: filters.regex ?? "",
-          roles: filters.roles.map((r) => r?.id).filter((id): id is string => id !== undefined),
-          tags: filters.tags.map((t) => t?.id).filter((id): id is string => id !== undefined),
-        },
-        thread
-      )
-    ) {
-      switch (action) {
-        case "inaction":
-          rv.noAction.push(thread);
+  const chunkSize = 20;
+  const threadChunks = Array(Math.ceil(threads.length / chunkSize))
+    .fill(0)
+    .map((_, i) => threads.slice(i * chunkSize, (i + 1) * chunkSize));
+
+  for (const chunk of threadChunks) {
+    await handleApiError(
+      "Processing thread chunk",
+      async () => {
+        await Promise.all(
+          chunk.map(async (thread) => {
+            try {
+              const shouldWatch = await threadShouldBeWatched(
+                {
+                  id: thread.id,
+                  server: thread.guildId,
+                  regex: filters.regex ?? "",
+                  roles: filters.roles.map((r) => r?.id),
+                  tags: filters.tags.map((t) => t?.id),
+                },
+                thread
+              );
+
+              if (shouldWatch) {
+                switch (action) {
+                  case "watch":
+                    if (!threadsList.get(thread.id)?.watching) {
+                      await addThread(
+                        thread.id,
+                        dueArchiveTimestamp(
+                          thread.autoArchiveDuration ?? 0,
+                          thread.lastMessage?.createdAt ?? new Date()
+                        ),
+                        thread.guildId
+                      );
+                      result.added.push(thread);
+                    } else {
+                      result.noAction.push(thread);
+                    }
+                    break;
+
+                  case "unwatch":
+                    if (threadsList.has(thread.id)) {
+                      await removeThread(thread.id);
+                      result.removed.push(thread);
+                    } else {
+                      result.noAction.push(thread);
+                    }
+                    break;
+
+                  case "toggle":
+                    if (threadsList.get(thread.id)?.watching) {
+                      await removeThread(thread.id);
+                      result.removed.push(thread);
+                    } else {
+                      await addThread(
+                        thread.id,
+                        dueArchiveTimestamp(
+                          thread.autoArchiveDuration ?? 0,
+                          thread.lastMessage?.createdAt ?? new Date()
+                        ),
+                        thread.guildId
+                      );
+
+                      result.noAction.push(thread);
+                    }
+                    break;
+
+                  case "inaction":
+                  default:
+                    result.noAction.push(thread);
+                    break;
+                }
+              } else {
+                result.noAction.push(thread);
+              }
+            } catch (error) {
+              console.error(`Error processing thread ${thread.id}:`, error);
+              result.noAction.push(thread);
+            }
+          })
+        );
+      },
+      {
+        retries: 2,
+        retryDelay: 1000,
+        reportAtSeverity: ErrorSeverity.MEDIUM,
+        context: "Batch Command - Thread Processing",
+      }
+    );
+
+    if (threadChunks.length > 1) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Clean up any active collectors to prevent memory leaks
+ */
+function cleanupCollectors(): void {
+  for (const collector of activeCollectors) {
+    try {
+      collector.stop();
+    } catch (error) {
+      logger.error(`Error stopping collector: ${error}`);
+    }
+  }
+  activeCollectors.clear();
+}
+
+/**
+ * Register component collectors in our tracking set
+ * @param component The component that might have a collector
+ */
+function registerCollector(component: TwButton | TwModal | TwStringSelect): void {
+  if (
+    "collector" in component &&
+    component.collector &&
+    component.collector instanceof InteractionCollector
+  ) {
+    activeCollectors.add(component.collector);
+  }
+}
+
+const batchCommand: Command = {
+  run: async (interaction: ChatInputCommandInteraction, buildBaseEmbed): Promise<void> => {
+    try {
+      await rateLimitManager.waitForRateLimit(`commands/${interaction.guildId}/batch`);
+
+      await interaction.deferReply();
+
+      const parent = interaction.options.getChannel("parent") || interaction.channel;
+      const advanced = interaction.options.getBoolean("advanced") ?? false;
+      const watchNew = interaction.options.getBoolean("watch-new") ?? false;
+      const actionOption = interaction.options.getString("action") ?? "inaction";
+
+      let action: ActionType;
+      switch (actionOption) {
+        case "toggle":
+          action = "toggle";
           break;
         case "watch":
-          if (!threadsList.get(thread.id)?.watching) {
-            addThread(
-              thread.id,
-              dueArchiveTimestamp(thread.autoArchiveDuration ?? 0, thread.lastMessage?.createdAt),
-              thread.guildId
-            );
-            rv.added.push(thread);
-          } else {
-            rv.noAction.push(thread);
-          }
+          action = "watch";
           break;
         case "unwatch":
-          if (threadsList.has(thread.id)) {
-            removeThread(thread.id);
-            rv.removed.push(thread);
-          } else {
-            rv.noAction.push(thread);
-          }
+          action = "unwatch";
           break;
-        case "toggle":
-          if (threadsList.get(thread.id)?.watching) {
-            removeThread(thread.id);
-            rv.removed.push(thread);
-          } else {
-            addThread(
-              thread.id,
-              dueArchiveTimestamp(thread.autoArchiveDuration ?? 0, thread.lastMessage?.createdAt),
-              thread.guildId
-            );
-            rv.noAction.push(thread);
-          }
-          break;
+        default:
+          action = "inaction";
       }
-    }
-  }
 
-  return rv;
-};
+      const filters: FilterTypes = {
+        roles: [],
+        tags: [],
+        regex: "",
+      };
 
-const getDirThreads = async (dir: CategoryChannel): Promise<ThreadChannel[]> => {
-  const threads: ThreadChannel[] = [];
-
-  for (const [, channel] of dir.children.cache) {
-    if (!channel) continue;
-    if (
-      !(
-        channel instanceof TextChannel ||
-        channel instanceof NewsChannel ||
-        channel instanceof ForumChannel
-      )
-    )
-      continue;
-
-    const chanThreads = await getThreads(channel);
-
-    if (chanThreads) threads.push(...chanThreads);
-  }
-
-  return threads;
-};
-type BuildBaseEmbedFunction = (
-  title: string,
-  status: statusType,
-  misc?: baseEmbedOptions
-) => EmbedBuilder;
-
-const batch: Command = {
-  run: async (
-    interaction: ChatInputCommandInteraction<CacheType>,
-    buildBaseEmbed: BuildBaseEmbedFunction
-  ): Promise<void> => {
-    await interaction.deferReply({
-      flags: [MessageFlagsBitField.Flags.Ephemeral],
-    });
-    const parent = interaction.options.getChannel("parent") || interaction.channel;
-    if (!parent) {
-      const embed = buildBaseEmbed("Error", statusType.error, {
-        description: "Parent channel not found.",
-      });
-      await interaction.editReply({ embeds: [embed] });
-      return;
-    }
-
-    const advanced: boolean | null = interaction.options.getBoolean("advanced");
-    const watchNew: boolean | null = interaction.options.getBoolean("watch-new");
-    let action: actionType = "inaction";
-    const embeds: EmbedBuilder[] = [];
-
-    switch (interaction.options.getString("action")) {
-      case "toggle":
-        action = "toggle";
-        break;
-      case "watch":
-        action = "watch";
-        break;
-      case "unwatch":
-        action = "unwatch";
-        break;
-      default:
-        action = "inaction";
-    }
-
-    const buildActionList: (actions: actionsList) => string = (actions: actionsList): string => {
-      let rv = "";
-
-      if (actions.added.length !== 0) rv += `**Threads watched:** \`${actions.added.length}\`\n`;
-      if (actions.removed.length !== 0)
-        rv += `**Threads unwatched:** \`${actions.removed.length}\`\n`;
-      if (actions.noAction.length !== 0)
-        rv += `**Threads not affected:** \`${actions.noAction.length}\`\n`;
-
-      if (rv === "") rv = "**found no threads**";
-
-      return rv;
-    };
-
-    // This sometimes fails? Idk why
-    const sendResultsEmbed: (actions: actionsList) => void = (actions: actionsList): void => {
-      const resultEmbed: EmbedBuilder = buildBaseEmbed("Done", statusType.success, {
-        noSend: true,
-        description: `new threads created in <#${parent?.id}> ${watchNew ? "will" : "will not"} be watched\n-# **Keep in mind:** it might take upwards of an hour for the bot to ressurect any threads watched`,
-        fields: [
-          {
-            name: "Threads actioned",
-            value: buildActionList(actions),
-          },
-        ],
-      });
-
-      embeds.push(resultEmbed);
-
-      interaction.editReply({ embeds, components: [] });
-    };
-
-    const buttonFilter: (int: ButtonInteraction) => boolean = (int: ButtonInteraction): boolean =>
-      int.user.id === interaction.user.id;
-
-    if (!interaction.inGuild() || !interaction.guild) {
-      const embed = buildBaseEmbed("Guild Only", statusType.error, {
-        description: "This command must be run in a server.",
-      });
-      await interaction.editReply({ embeds: [embed] });
-      return;
-    }
-
-    const guild = interaction.guild;
-    const botMember = await guild.members.fetchMe();
-    const targetChannel = parent as TextChannel | NewsChannel | ForumChannel | CategoryChannel;
-
-    if (targetChannel instanceof CategoryChannel) {
-      if (!targetChannel.permissionsFor(botMember)?.has(PermissionFlagsBits.ViewChannel)) {
-        const embed = buildBaseEmbed("Insufficient Permissions", statusType.error, {
-          description: `Bot requires "View Channel" permission on <#${targetChannel.id}>.`,
+      if (
+        !parent ||
+        !(
+          parent instanceof CategoryChannel ||
+          ("guild" in parent && isThreadCapableChannel(parent as GuildBasedChannel))
+        )
+      ) {
+        await interaction.editReply({
+          embeds: [
+            buildBaseEmbed("Wrong Channel Type", statusType.error, {
+              description: `<#${parent?.id ?? "unknown"}> is not a valid channel for this command`,
+            }),
+          ],
         });
-        await interaction.editReply({ embeds: [embed] });
         return;
       }
-    } else {
-      const canView = targetChannel.permissionsFor(botMember)?.has(PermissionFlagsBits.ViewChannel);
-      const canManageThreads = targetChannel
-        .permissionsFor(botMember)
-        ?.has(PermissionFlagsBits.ManageThreads);
-      if (!canView || !canManageThreads) {
-        const embed = buildBaseEmbed("Insufficient Permissions", statusType.error, {
-          description: `Bot requires both "View Channel" and "Manage Threads" permissions on <#${targetChannel.id}>.`,
+
+      if (!parent.viewable) {
+        await interaction.editReply({
+          embeds: [
+            buildBaseEmbed("Cannot view channel", statusType.error, {
+              description: `Thread-Watcher cannot see <#${parent.id}>. Make sure the bot has the \`View Channel\` permission in the channel.`,
+            }),
+          ],
         });
-        await interaction.editReply({ embeds: [embed] });
         return;
       }
-    }
 
-    if (!action || !interaction.guildId) {
-      const embed: EmbedBuilder = buildBaseEmbed("Rare Easter Egg", statusType.warning, {
-        description:
-          "Congrats! 🎉\nThis error should be impossible to get but you got it anyhow you silly little sausage.",
-      });
-      await interaction.editReply({ embeds: [embed] });
-      return;
-    }
-
-    const threads: ThreadChannel[] = [];
-
-    // put all the affected threads into a flat array
-    if (parent instanceof CategoryChannel) {
-      threads.push(...(await getDirThreads(parent)));
-    } else if (
-      parent instanceof TextChannel ||
-      parent instanceof NewsChannel ||
-      parent instanceof ForumChannel ||
-      parent instanceof MediaChannel
-    ) {
-      threads.push(...(await getThreads(parent)));
-    }
-
-    // put all the roles into a chunkable (such a good class wow must have been a genious who made that)
-    const roles = Chunkable.from(Array.from(interaction.guild?.roles.cache.values() ?? []));
-
-    const filters: filterTypes = {
-      roles: [],
-      tags: [],
-      regex: "",
-    };
-
-    const components: ActionRowBuilder<StringSelectMenuBuilder | ButtonBuilder>[] = [];
-
-    if (advanced) {
-      const filterEmbed = buildBaseEmbed("Filter Options", statusType.info, {
-        noSend: true,
-        description: `
-                            The bot will only handle threads that match the criteria set by you below.
-
-                            <:arrow_right:1197893896416538695> If multiple roles are selected, the thread owner **needs only one** for the thread to be watched
-                            <:arrow_right:1197893896416538695> The same is true for post tags
-                        `,
-      });
-
-      const regexRowComponents = new ActionRowBuilder<ButtonBuilder>();
-      const rolesSelectComponents = new ActionRowBuilder<StringSelectMenuBuilder>();
-      const rolesRowNavigationComponents = new ActionRowBuilder<ButtonBuilder>();
-      const tagsSelectComponents = new ActionRowBuilder<StringSelectMenuBuilder>();
-      const confirmationButtonComponents = new ActionRowBuilder<ButtonBuilder>();
-
-      embeds.push(filterEmbed);
-      components.push(regexRowComponents, rolesSelectComponents, rolesRowNavigationComponents);
-
-      if (parent instanceof ForumChannel && parent.availableTags.length !== 0) {
-        components.push(tagsSelectComponents);
+      if (!action || !interaction.guildId) {
+        await interaction.editReply({
+          embeds: [
+            buildBaseEmbed("Rare Easter Egg", statusType.warning, {
+              description:
+                "Congrats! 🎉\nThis error should be impossible to get but you got it anyhow you silly little sausage.",
+            }),
+          ],
+        });
+        return;
       }
 
-      components.push(confirmationButtonComponents);
+      const threads: ThreadChannel[] = [];
 
-      const genEmbedFields = () => {
-        filterEmbed.setFields([
-          {
-            name: "Roles",
-            value: filters.roles.map((r) => `<@&${r?.id}>`).join(", ") || "none selected",
-            inline: true,
-          },
-          {
-            name: "Tags",
-            value: filters.tags.map((t) => `${t?.name}`).join(", ") || "none selected",
-            inline: true,
-          },
-          {
-            name: "Pattern",
-            value: `\`${filters.regex}\``,
-            inline: true,
-          },
-        ]);
+      await handleApiError(
+        "Failed to fetch threads",
+        async () => {
+          if (parent instanceof CategoryChannel) {
+            threads.push(...(await getAllThreads(parent)));
+          } else if ("guild" in parent && isThreadCapableChannel(parent as GuildBasedChannel)) {
+            threads.push(...(await getAllThreads(parent)));
+          }
+        },
+        {
+          context: "Batch Command - Thread Fetching",
+          reportAtSeverity: ErrorSeverity.MEDIUM,
+        }
+      );
+
+      const roles = Chunkable.from(Array.from(interaction.guild?.roles.cache.values() ?? []));
+
+      const embeds: EmbedBuilder[] = [];
+
+      const buildActionList = (actions: ActionsList) => {
+        let rv = "";
+
+        if (actions.added.length !== 0) rv += `**Threads watched:** \`${actions.added.length}\`\n`;
+        if (actions.removed.length !== 0)
+          rv += `**Threads unwatched:** \`${actions.removed.length}\`\n`;
+        if (actions.noAction.length !== 0)
+          rv += `**Threads not affected:** \`${actions.noAction.length}\`\n`;
+
+        if (rv === "") rv = "**found no threads**";
+        return rv;
       };
 
-      const updateEmbed = (i: ButtonInteraction | AnySelectMenuInteraction) => {
-        genEmbedFields();
-        interaction.editReply({ embeds: [filterEmbed], components });
-
-        if (!i.replied) {
-          i.update({ content: "Choice saved" });
-        }
-      };
-
-      const tagsSelect = () => {
-        if (!(parent instanceof ForumChannel)) return null;
-        const select = new TwStringSelect();
-        select.select
-          .setPlaceholder("select tags!")
-          .setMinValues(1)
-          .setMaxValues(parent.availableTags.length);
-
-        for (const i of parent.availableTags) {
-          const option = new StringSelectMenuOptionBuilder()
-            .setLabel(i.name)
-            .setDescription(`${i.id}`)
-            .setValue(i.id);
-          select.select.addOptions(option);
-        }
-
-        select.filter = (i) => i.user.id === interaction.user.id;
-        select.onSubmit((i) => {
-          filters.tags = i.values.map((tagId) =>
-            parent.availableTags.find((tag) => tag.id === tagId)
-          );
-          updateEmbed(i);
+      const sendResultsEmbed = (actions: ActionsList) => {
+        const resultEmbed = buildBaseEmbed("Done", statusType.success, {
+          noSend: true,
+          description: `new threads created in <#${parent?.id}> ${watchNew ? "will" : "will not"} be watched\n-# **Keep in mind:** it might take upwards of an hour for the bot to ressurect any threads watched`,
+          fields: [
+            {
+              name: "Threads actioned",
+              value: buildActionList(actions),
+            },
+          ],
         });
 
-        tagsSelectComponents.addComponents(select.select);
+        embeds.push(resultEmbed);
+        interaction.editReply({ embeds, components: [] });
+
+        let rv = "";
+
+        if (actions.added.length !== 0) rv += `**Threads watched:** \`${actions.added.length}\`\n`;
+        if (actions.removed.length !== 0)
+          rv += `**Threads unwatched:** \`${actions.removed.length}\`\n`;
+        if (actions.noAction.length !== 0)
+          rv += `**Threads not affected:** \`${actions.noAction.length}\`\n`;
+
+        if (rv === "") rv = "**found no threads**";
+        return rv;
       };
 
-      const roleNavigation = () => {
-        let rolesPage = roles.current;
+      const buttonFilter = (int: ButtonInteraction) => int.user.id === interaction.user.id;
 
-        const select = new TwStringSelect();
+      if (advanced) {
+        const filterEmbed = buildBaseEmbed("Filter Options", statusType.info, {
+          noSend: true,
+          description: `
+            The bot will only handle threads that match the criteria set by you below.
 
-        const setSelectValues = () => {
-          if (rolesPage.length === 0) return null;
-          select.select
-            .setPlaceholder("select roles!")
-            .setMinValues(1)
-            .setMaxValues(rolesPage.length)
-            .setOptions([]);
+            → If multiple roles are selected, the thread owner **needs only one** for the thread to be watched
+            → The same is true for post tags
+          `,
+        });
 
-          for (const i of rolesPage) {
-            const option = new StringSelectMenuOptionBuilder()
-              .setLabel(i.name)
-              .setDescription(
-                Math.random() > 0.995
-                  ? "wow an easter egg???"
-                  : `${i.members.size} members has this role`
-              )
-              .setValue(i.id);
+        const regexRowComponents = new ActionRowBuilder<ButtonBuilder>();
+        const rolesSelectComponents = new ActionRowBuilder<StringSelectMenuBuilder>();
+        const rolesRowNavigationComponents = new ActionRowBuilder<ButtonBuilder>();
+        const tagsSelectComponents = new ActionRowBuilder<StringSelectMenuBuilder>();
+        const confirmationButtonComponents = new ActionRowBuilder<ButtonBuilder>();
 
-            select.select.addOptions(option);
+        embeds.push(filterEmbed);
+        const components = [
+          regexRowComponents,
+          rolesSelectComponents,
+          rolesRowNavigationComponents,
+        ];
+
+        if (parent instanceof ForumChannel && parent.availableTags.length !== 0) {
+          components.push(tagsSelectComponents);
+        }
+
+        components.push(confirmationButtonComponents);
+
+        const genEmbedFields = () => {
+          filterEmbed.setFields([
+            {
+              name: "Roles",
+              value: filters.roles.map((r) => `<@&${r?.id}>`).join(", ") || "none selected",
+              inline: true,
+            },
+            {
+              name: "Tags",
+              value: filters.tags.map((t) => `${t?.name}`).join(", ") || "none selected",
+              inline: true,
+            },
+            {
+              name: "Pattern",
+              value: `\`${filters.regex || "none"}\``,
+              inline: true,
+            },
+          ]);
+        };
+
+        const updateEmbed = (i: ButtonInteraction | CollectedInteraction) => {
+          genEmbedFields();
+          interaction.editReply({ embeds: [filterEmbed], components });
+
+          if (!i.replied && "update" in i) {
+            i.update({ content: "Choice saved" });
           }
         };
 
-        setSelectValues();
+        const tagsSelect = () => {
+          if (!(parent instanceof ForumChannel)) return;
 
-        const nextButton = new TwButton("next", ButtonStyle.Secondary, {
-          emoji: "▶",
-        });
-        const prevButton = new TwButton("prev", ButtonStyle.Secondary, {
-          emoji: "◀",
-        });
-        const clearButton = new TwButton("clear", ButtonStyle.Danger, {
-          emoji: "🗑️",
-        });
+          const select = new TwStringSelect();
+          registerCollector(select);
 
-        nextButton.filter = buttonFilter;
-        prevButton.filter = buttonFilter;
-        clearButton.filter = buttonFilter;
-        select.filter = (i) => i.user.id === interaction.user.id;
-        clearButton.button.setDisabled(true);
+          select.select
+            .setPlaceholder("select tags!")
+            .setMinValues(1)
+            .setMaxValues(parent.availableTags.length);
 
-        clearButton.onclick((i) => {
-          filters.roles = [];
-          clearButton.button.setDisabled(true);
-          updateEmbed(i);
-        });
+          for (const i of parent.availableTags) {
+            const option = new StringSelectMenuOptionBuilder()
+              .setLabel(i.name)
+              .setDescription(`${i.id}`)
+              .setValue(i.id);
+            select.select.addOptions(option);
+          }
 
-        nextButton.onclick((i) => {
-          rolesPage = roles.forwards();
-          setSelectValues();
-          updateEmbed(i);
-        });
-
-        prevButton.onclick((i) => {
-          rolesPage = roles.back();
-          setSelectValues();
-          updateEmbed(i);
-        });
-
-        select.onSubmit((i) => {
-          filters.roles.push(...i.values.map((rId) => i.guild?.roles.cache.get(rId)));
-          clearButton.button.setDisabled(false);
-          updateEmbed(i);
-        });
-
-        rolesRowNavigationComponents.addComponents(
-          prevButton.button,
-          clearButton.button,
-          nextButton.button
-        );
-        rolesSelectComponents.addComponents(select.select);
-      };
-
-      const regexButtons = () => {
-        const setButton = new TwButton("Select Pattern", ButtonStyle.Primary);
-        const tryButton = new TwButton("Try Pattern", ButtonStyle.Secondary);
-        const clearButton = new TwButton("Clear Pattern", ButtonStyle.Danger);
-
-        setButton.filter = buttonFilter;
-        tryButton.filter = buttonFilter;
-        clearButton.filter = buttonFilter;
-        tryButton.button.setDisabled(true);
-        clearButton.button.setDisabled(true);
-
-        setButton.onclick((i) => {
-          const modal = new TwModal("Enter Pattern");
-          modal.addInput("pattern", "pattern");
-          modal.filter = (i) => i.user.id === interaction.user.id;
-
-          modal.onSubmit((response) => {
-            const ptrn = response.fields.getTextInputValue("pattern");
-
-            const isRegexValid = validRegex(ptrn);
-
-            if (isRegexValid.valid) {
-              filters.regex = ptrn;
-              response.reply({
-                flags: [MessageFlagsBitField.Flags.Ephemeral],
-                content: "saved",
-              });
-            } else {
-              /**
-               * TODO: update docs link for patterns
-               */
-              const embed = buildBaseEmbed("Syntax Error", statusType.error, {
-                noSend: true,
-                description: `the pattern you provided (\`${ptrn}\`) is not valid due to ${isRegexValid.reason}. Read the documentation on [**patterns**](https://example.com) for more info!`,
-              });
-              response.reply({
-                flags: [MessageFlagsBitField.Flags.Ephemeral],
-                embeds: [embed],
-              });
-            }
-
-            clearButton.button.setDisabled(false);
-            tryButton.button.setDisabled(false);
-
+          select.filter = (i) => i.user.id === interaction.user.id;
+          select.onSubmit((i) => {
+            filters.tags = i.values.map((tagId) =>
+              parent.availableTags.find((tag) => tag.id === tagId)
+            );
             updateEmbed(i);
           });
 
-          i.showModal(modal.modal);
-        });
+          tagsSelectComponents.addComponents(select.select);
+        };
 
-        clearButton.onclick((i) => {
-          filters.regex = "";
+        const roleNavigation = () => {
+          let rolesPage = roles.current;
+          const select = new TwStringSelect();
+          registerCollector(select);
+
+          const setSelectValues = () => {
+            if (rolesPage.length === 0) return;
+            select.select
+              .setPlaceholder("select roles!")
+              .setMinValues(1)
+              .setMaxValues(rolesPage.length)
+              .setOptions([]);
+
+            for (const i of rolesPage) {
+              const option = new StringSelectMenuOptionBuilder()
+                .setLabel(i.name)
+                .setDescription(
+                  Math.random() > 0.995
+                    ? "wow an easter egg???"
+                    : `${i.members.size} members has this role`
+                )
+                .setValue(i.id);
+
+              select.select.addOptions(option);
+            }
+          };
+
+          setSelectValues();
+
+          const nextButton = new TwButton("next", ButtonStyle.Secondary, { emoji: "▶" });
+          const prevButton = new TwButton("prev", ButtonStyle.Secondary, { emoji: "◀" });
+          const clearButton = new TwButton("clear", ButtonStyle.Danger, { emoji: "🗑️" });
+
+          registerCollector(nextButton);
+          registerCollector(prevButton);
+          registerCollector(clearButton);
+
+          nextButton.filter = buttonFilter;
+          prevButton.filter = buttonFilter;
+          clearButton.filter = buttonFilter;
+          select.filter = (i) => i.user.id === interaction.user.id;
           clearButton.button.setDisabled(true);
-          tryButton.button.setDisabled(false);
-          updateEmbed(i);
+
+          clearButton.onclick(async (i) => {
+            await handleApiError(
+              "Failed to clear roles",
+              () => {
+                filters.roles = [];
+                clearButton.button.setDisabled(true);
+                updateEmbed(i);
+
+                return Promise.resolve();
+              },
+              {
+                context: "Batch Command - Clear Roles",
+                reportAtSeverity: ErrorSeverity.LOW,
+              }
+            );
+          });
+
+          nextButton.onclick(async (i) => {
+            await handleApiError(
+              "Failed to navigate roles",
+              () => {
+                rolesPage = roles.forwards();
+                setSelectValues();
+                updateEmbed(i);
+
+                return Promise.resolve();
+              },
+              {
+                context: "Batch Command - Next Roles Page",
+                reportAtSeverity: ErrorSeverity.LOW,
+              }
+            );
+          });
+
+          prevButton.onclick(async (i) => {
+            await handleApiError(
+              "Failed to navigate roles",
+              () => {
+                rolesPage = roles.back();
+                setSelectValues();
+                updateEmbed(i);
+
+                return Promise.resolve();
+              },
+              {
+                context: "Batch Command - Previous Roles Page",
+                reportAtSeverity: ErrorSeverity.LOW,
+              }
+            );
+          });
+
+          select.onSubmit(async (i) => {
+            await handleApiError(
+              "Failed to select roles",
+              () => {
+                filters.roles.push(...i.values.map((rId) => i.guild?.roles.cache.get(rId)));
+                clearButton.button.setDisabled(false);
+                updateEmbed(i);
+
+                return Promise.resolve();
+              },
+              {
+                context: "Batch Command - Role Selection",
+                reportAtSeverity: ErrorSeverity.LOW,
+              }
+            );
+          });
+
+          rolesRowNavigationComponents.addComponents(
+            prevButton.button,
+            clearButton.button,
+            nextButton.button
+          );
+          rolesSelectComponents.addComponents(select.select);
+        };
+
+        const regexButtons = () => {
+          const setButton = new TwButton("Select Pattern", ButtonStyle.Primary);
+          const tryButton = new TwButton("Try Pattern", ButtonStyle.Secondary);
+          const clearButton = new TwButton("Clear Pattern", ButtonStyle.Danger);
+
+          registerCollector(setButton);
+          registerCollector(tryButton);
+          registerCollector(clearButton);
+
+          setButton.filter = buttonFilter;
+          tryButton.filter = buttonFilter;
+          clearButton.filter = buttonFilter;
+          tryButton.button.setDisabled(true);
+          clearButton.button.setDisabled(true);
+
+          setButton.onclick(async (i) => {
+            await handleApiError(
+              "Failed to show regex modal",
+              async () => {
+                const modal = new TwModal("Enter Pattern");
+                registerCollector(modal);
+
+                modal.addInput("pattern", "pattern");
+                modal.filter = (i) => i.user.id === interaction.user.id;
+
+                modal.onSubmit(async (response) => {
+                  const ptrn = response.fields.getTextInputValue("pattern");
+                  const isRegexValid = validRegex(ptrn);
+
+                  if (isRegexValid.valid) {
+                    filters.regex = ptrn;
+                    await response.reply({
+                      flags: [MessageFlagsBitField.Flags.Ephemeral],
+                      content: "saved",
+                    });
+                  } else {
+                    const embed = buildBaseEmbed("Syntax Error", statusType.error, {
+                      noSend: true,
+                      description: `the pattern you provided (\`${ptrn}\`) is not valid due to ${isRegexValid.reason}. Read the documentation on [**patterns**](https://example.com) for more info!`,
+                    });
+                    await response.reply({
+                      flags: [MessageFlagsBitField.Flags.Ephemeral],
+                      embeds: [embed],
+                    });
+                  }
+
+                  clearButton.button.setDisabled(false);
+                  tryButton.button.setDisabled(false);
+                  updateEmbed(i);
+                });
+
+                await i.showModal(modal.modal);
+              },
+              {
+                context: "Batch Command - Pattern Modal",
+                reportAtSeverity: ErrorSeverity.LOW,
+              }
+            );
+          });
+
+          clearButton.onclick(async (i) => {
+            await handleApiError(
+              "Failed to clear pattern",
+              () => {
+                filters.regex = "";
+                clearButton.button.setDisabled(true);
+                tryButton.button.setDisabled(false);
+                updateEmbed(i);
+
+                return Promise.resolve();
+              },
+              {
+                context: "Batch Command - Clear Pattern",
+                reportAtSeverity: ErrorSeverity.LOW,
+              }
+            );
+          });
+
+          tryButton.onclick(async (i) => {
+            await handleApiError(
+              "Failed to test pattern",
+              async () => {
+                const testThreads = threads.slice(0, 10);
+                const regex = strToRegex(filters.regex);
+                const embed = buildBaseEmbed("Test Results", statusType.info, {
+                  noSend: true,
+                  description: `pattern: \`${filters.regex}\` ${regex.inverted ? "**(INVERTED)**" : ""}`,
+                });
+
+                embed.addFields({
+                  name: "Results",
+                  value:
+                    testThreads
+                      .map((e) => `**${e.name}**: ${regex.regex.test(e.name) !== regex.inverted}`)
+                      .join("\n") || "No threads to test",
+                });
+
+                await i.reply({ embeds: [embed], flags: [MessageFlagsBitField.Flags.Ephemeral] });
+              },
+              {
+                context: "Batch Command - Test Pattern",
+                reportAtSeverity: ErrorSeverity.LOW,
+              }
+            );
+          });
+
+          regexRowComponents.addComponents(setButton.button, clearButton.button, tryButton.button);
+        };
+
+        const confirmButtons = () => {
+          const confirm = new TwButton("Confirm Choices", ButtonStyle.Success);
+          const cancel = new TwButton("Cancel", ButtonStyle.Danger);
+
+          registerCollector(confirm);
+          registerCollector(cancel);
+
+          confirm.filter = buttonFilter;
+          cancel.filter = buttonFilter;
+
+          cancel.onclick(async (i) => {
+            await handleApiError(
+              "Failed to cancel",
+              async () => {
+                cleanupCollectors();
+
+                const embedMessage = buildBaseEmbed("Cancelled!", statusType.warning, {
+                  noSend: true,
+                });
+                await i.update({ embeds: [embedMessage], components: [] });
+              },
+              {
+                context: "Batch Command - Cancel",
+                reportAtSeverity: ErrorSeverity.LOW,
+              }
+            );
+          });
+
+          confirm.onclick(async (i) => {
+            await handleApiError(
+              "Failed to process threads",
+              async () => {
+                cleanupCollectors();
+
+                filterEmbed.setColor("Green");
+                await i.update({ embeds: [filterEmbed], components: [] });
+
+                const result = await handleThreadActioning(threads, action, filters);
+
+                if (watchNew) {
+                  const alreadyExists = (await db.getChannels(parent.id)).find(
+                    (t) => t.id === parent.id
+                  );
+
+                  if (alreadyExists) await db.deleteChannel(parent.id);
+
+                  await db.insertChannel({
+                    id: parent.id,
+                    server: interaction.guildId ?? "",
+                    regex: filters.regex,
+                    tags: filters.tags.map((t) => t?.id),
+                    roles: filters.roles.map((r) => r?.id),
+                  });
+                }
+
+                sendResultsEmbed(result);
+              },
+              {
+                context: "Batch Command - Confirm",
+                reportAtSeverity: ErrorSeverity.MEDIUM,
+              }
+            );
+          });
+
+          confirmationButtonComponents.addComponents(confirm.button, cancel.button);
+        };
+
+        regexButtons();
+        roleNavigation();
+        tagsSelect();
+        confirmButtons();
+        genEmbedFields();
+
+        await interaction.editReply({
+          embeds: [filterEmbed],
+          components,
         });
-
-        tryButton.onclick(() => {
-          const testThreads = threads.slice(0, 10);
-
-          const regex = strToRegex(filters.regex);
-          const e = buildBaseEmbed("Test Results", statusType.info, {
-            noSend: true,
-            description: `pattern: \`${filters.regex}\` ${regex.inverted ? "**(INVERTED)**" : ""}`,
-          });
-
-          e.addFields({
-            name: "Results",
-            value: ` ${testThreads.map((e) => `**${e.name}**: ${regex.regex.test(e.name) !== regex.inverted}`).join("\n")} `,
-          });
-
-          interaction.reply({
-            embeds: [e],
-            flags: [MessageFlagsBitField.Flags.Ephemeral],
-          });
-        });
-
-        regexRowComponents.addComponents(setButton.button, clearButton.button, tryButton.button);
-      };
-
-      const confirmButtons = () => {
-        // confirmationButtonComponents
-        const confirm = new TwButton("Confirm Choices", ButtonStyle.Success);
-        const cancel = new TwButton("Cancel", ButtonStyle.Danger);
-
-        confirm.filter = buttonFilter;
-        cancel.filter = buttonFilter;
-
-        cancel.onclick((i) => {
-          const e = buildBaseEmbed("Cancelled!", statusType.warning, {
-            noSend: true,
-          });
-          i.update({ embeds: [e], components: [] });
-        });
-
-        confirm.onclick(async (i) => {
-          filterEmbed.setColor("Green");
-          i.update({ embeds: [filterEmbed], components: [] });
-
-          // HELLO FUTURE ME!!!
-          /*
-                        this is where we call the function that does the stuff to the thread (/batch functionality)
-                        as well as write it to db (/auto functionality). We must also remember to immedietly call that
-                        if advanced is not used
-                    */
-
-          const result = await handleThreadActioning(threads, action, filters);
-          if (watchNew) {
-            const alreadyExists = (await db.getChannels(parent.id)).find((t) => t.id === parent.id);
-
-            // If filter alr exists for this channel we go ahead and delete it
-            // this so the insertion we make later does not cause any oopsie poopsies
-            if (alreadyExists) await db.deleteChannel(parent.id);
-
-            db.insertChannel({
-              id: parent.id,
-              server: interaction.guildId ?? "",
-              regex: filters.regex,
-              tags: filters.tags.map((t) => t?.id).filter((id): id is string => id !== undefined),
-              roles: filters.roles.map((r) => r?.id).filter((id): id is string => id !== undefined),
-            });
+      } else {
+        const result = await handleApiError(
+          "Failed to process threads",
+          async () => {
+            return await handleThreadActioning(threads, action, filters);
+          },
+          {
+            context: "Batch Command - Process Threads",
+            reportAtSeverity: ErrorSeverity.MEDIUM,
           }
+        );
 
-          sendResultsEmbed(result);
-          //i.reply("ok :D")
-        });
+        if (watchNew) {
+          await handleApiError(
+            "Failed to save auto-watch config",
+            async () => {
+              const alreadyExists = (await db.getChannels(parent.id)).find(
+                (t) => t.id === parent.id
+              );
 
-        confirmationButtonComponents.addComponents(confirm.button, cancel.button);
-      };
+              if (alreadyExists) await db.deleteChannel(parent.id);
 
-      regexButtons();
-      roleNavigation();
-      tagsSelect();
-      confirmButtons();
-      genEmbedFields();
+              await db.insertChannel({
+                id: parent.id,
+                server: interaction.guildId ?? "",
+                regex: filters.regex,
+                tags: filters.tags.map((t) => t?.id),
+                roles: filters.roles.map((r) => r?.id),
+              });
+            },
+            {
+              context: "Batch Command - Auto-Watch Config",
+              reportAtSeverity: ErrorSeverity.MEDIUM,
+            }
+          );
+        }
 
-      interaction.editReply({
-        embeds: [filterEmbed],
-        components: components,
-      });
-
-      // For debugging
-      return;
-    } else {
-      const result = await handleThreadActioning(threads, action, filters);
-      if (watchNew) {
-        const alreadyExists = (await db.getChannels(parent.id)).find((t) => t.id == parent.id);
-
-        // If filter alr exists for this channel we go ahead and delete it
-        // this so the insertion we make later does not cause any oopsie poopsies
-        if (alreadyExists) await db.deleteChannel(parent.id);
-        db.insertChannel({
-          id: parent.id,
-          server: interaction.guildId,
-          regex: filters.regex,
-          tags: filters.tags.map((t) => t?.id).filter((id): id is string => id !== undefined),
-          roles: filters.roles.map((r) => r?.id).filter((id): id is string => id !== undefined),
-        });
+        sendResultsEmbed(result);
+        cleanupCollectors();
       }
-      sendResultsEmbed(result);
+    } catch (error) {
+      cleanupCollectors();
+
+      await handleCommandError(interaction, error, buildBaseEmbed, {
+        errorTitle: "Batch Processing Failed",
+        errorDescription:
+          "Failed to process threads. The channel may not support threads or the bot lacks permissions.",
+        context: "Batch Command Execution",
+        reportAtSeverity: ErrorSeverity.MEDIUM,
+      });
     }
+  },
+  gatekeeping: {
+    userPermissions: [PermissionFlagsBits.ManageThreads],
+    ownerOnly: false,
+    devServerOnly: false,
   },
   data: new SlashCommandBuilder()
     .setName("batch")
@@ -652,19 +803,14 @@ const batch: Command = {
     .addBooleanOption((o) =>
       o.setName("watch-new").setDescription("will automatically watch new threads")
     ),
-  gatekeeping: {
-    userPermissions: [PermissionFlagsBits.ManageThreads],
-    ownerOnly: false,
-    devServerOnly: false,
-  },
   externalOptions: [
     {
-      channel_types: [0, 4, 5, 15, 16],
+      channel_types: THREAD_CAPABLE_CHANNEL_TYPES,
       description: "parent whose children will be affected",
       name: "parent",
-      type: 7,
+      type: ApplicationCommandOptionType.Channel,
     },
   ],
 };
 
-export default batch;
+export default batchCommand;

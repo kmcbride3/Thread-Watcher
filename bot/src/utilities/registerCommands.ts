@@ -1,34 +1,29 @@
-import { Command } from "../interfaces/command";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from "fs";
-import path from "path";
-import { REST, Routes } from "discord.js";
-import { ConfigFile } from "./cnf/index";
 import { createHash } from "crypto";
-import loadCommands from "./loadCommands";
+import { Collection, REST, Routes } from "discord.js";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import path from "path";
 import { logger } from "../index";
+import { Command } from "../interfaces/command";
+import { ConfigFile } from "./cnf/index";
+import { ErrorSeverity, handleApiError } from "./errorSystem";
+import loadCommands from "./loadCommands";
+import { rateLimitManager } from "./rateLimitManager";
 
 export async function registerCommands(global: boolean, config: ConfigFile): Promise<void> {
   logger.debug(`Loading commands for registration (${global ? "global" : "local"})`);
 
   try {
     const commandsCollection = await loadCommands();
-    const publicCommands: Command[] = [];
-    const privateCommands: Command[] = [];
 
-    commandsCollection.forEach((cmd) => {
-      if (cmd.gatekeeping?.devServerOnly) {
-        privateCommands.push(cmd);
-      } else {
-        publicCommands.push(cmd);
-      }
-    });
+    const publicCommands = commandsCollection.filter((cmd) => !cmd.gatekeeping?.devServerOnly);
+    const privateCommands = commandsCollection.filter((cmd) => cmd.gatekeeping?.devServerOnly);
 
-    if (publicCommands.length > 0) {
-      logger.debug(`Found ${publicCommands.length} public commands`);
+    if (publicCommands.size > 0) {
+      logger.debug(`Found ${publicCommands.size} public commands`);
     }
 
-    if (privateCommands.length > 0) {
-      logger.debug(`Found ${privateCommands.length} dev-server-only commands`);
+    if (privateCommands.size > 0) {
+      logger.debug(`Found ${privateCommands.size} dev-server-only commands`);
     }
 
     if (!global && !config.devServer) {
@@ -37,6 +32,10 @@ export async function registerCommands(global: boolean, config: ConfigFile): Pro
     }
 
     const rest = new REST({ version: "10" }).setToken(config.tokens.discord);
+
+    rest.on("rateLimited", (rateLimitInfo) => {
+      rateLimitManager.handleRateLimit(rateLimitInfo);
+    });
 
     const commandToJson = (cmd: Command) => {
       const data = cmd.data.toJSON();
@@ -53,32 +52,58 @@ export async function registerCommands(global: boolean, config: ConfigFile): Pro
       return data;
     };
 
-    const promises = [];
+    const registerPromises = [];
 
-    if (global && publicCommands.length > 0) {
-      logger.info(`Registering ${publicCommands.length} commands globally`);
-      promises.push(
-        rest.put(Routes.applicationCommands(config.clientID), {
+    if (global && publicCommands.size > 0) {
+      logger.info(`Registering ${publicCommands.size} commands globally`);
+
+      const registerGlobalCommands = async () => {
+        await rateLimitManager.waitForRateLimit("application/commands");
+        return rest.put(Routes.applicationCommands(config.clientID), {
           body: publicCommands.map(commandToJson),
+        });
+      };
+
+      registerPromises.push(
+        handleApiError("Failed to register global commands", registerGlobalCommands, {
+          retries: 3,
+          retryDelay: 1000,
+          reportAtSeverity: ErrorSeverity.HIGH,
+          context: "Global Command Registration",
         })
       );
     }
 
     if (config.devServer) {
-      const devCommands = global ? privateCommands : [...publicCommands, ...privateCommands];
+      const devCommands = global
+        ? privateCommands
+        : new Collection([...publicCommands.entries(), ...privateCommands.entries()]);
 
-      if (devCommands.length > 0) {
-        logger.info(`Registering ${devCommands.length} commands to development server`);
-        promises.push(
-          rest.put(Routes.applicationGuildCommands(config.clientID, config.devServer), {
+      if (devCommands.size > 0) {
+        logger.info(`Registering ${devCommands.size} commands to development server`);
+
+        const registerDevCommands = async () => {
+          await rateLimitManager.waitForRateLimit(
+            `applications/${config.clientID}/guilds/${config.devServer}/commands`
+          );
+          return rest.put(Routes.applicationGuildCommands(config.clientID, config.devServer), {
             body: devCommands.map(commandToJson),
+          });
+        };
+
+        registerPromises.push(
+          handleApiError("Failed to register dev server commands", registerDevCommands, {
+            retries: 3,
+            retryDelay: 1000,
+            reportAtSeverity: ErrorSeverity.HIGH,
+            context: "Dev Server Command Registration",
           })
         );
       }
     }
 
-    if (promises.length > 0) {
-      await Promise.all(promises);
+    if (registerPromises.length > 0) {
+      await Promise.all(registerPromises);
       logger.done("Command registration successful");
     } else {
       logger.warn("No commands to register");
@@ -87,16 +112,38 @@ export async function registerCommands(global: boolean, config: ConfigFile): Pro
     logger.error(`Command registration failed: ${error}`);
     throw error;
   }
+  return Promise.resolve();
 }
 
 export async function clearCommands(local: boolean, config: ConfigFile): Promise<void> {
   try {
     const rest = new REST({ version: "10" }).setToken(config.tokens.discord);
+
+    rest.on("rateLimited", (rateLimitInfo) => {
+      rateLimitManager.handleRateLimit(rateLimitInfo);
+    });
+
     const route = local
       ? Routes.applicationGuildCommands(config.clientID, config.devServer)
       : Routes.applicationCommands(config.clientID);
 
-    await rest.put(route, { body: [] });
+    const endpoint = local
+      ? `applications/${config.clientID}/guilds/${config.devServer}/commands`
+      : `applications/${config.clientID}/commands`;
+
+    await rateLimitManager.waitForRateLimit(endpoint);
+
+    await handleApiError(
+      `Failed to clear ${local ? "local" : "global"} commands`,
+      async () => await rest.put(route, { body: [] }),
+      {
+        retries: 3,
+        retryDelay: 1000,
+        reportAtSeverity: ErrorSeverity.HIGH,
+        context: `Clear ${local ? "Local" : "Global"} Commands`,
+      }
+    );
+
     logger.done(`Cleared all ${local ? "local" : "global"} commands`);
   } catch (error) {
     logger.error(`Failed to clear commands: ${error}`);

@@ -1,14 +1,16 @@
 import {
   ActionRowBuilder,
-  ModalActionRowComponentBuilder,
-  ModalBuilder,
-  TextInputBuilder,
-  ModalSubmitInteraction,
-  TextInputStyle,
   Collection,
   MessageFlagsBitField,
+  ModalActionRowComponentBuilder,
+  ModalBuilder,
+  ModalSubmitInteraction,
+  TextInputBuilder,
+  TextInputStyle,
 } from "discord.js";
+import { logger } from "../index";
 import TwGenericComponent from "../interfaces/genericComponent";
+import { handleApiError } from "../utilities/apiErrorHandler";
 
 type modalSubmit = (interaction: ModalSubmitInteraction) => void;
 export type modalFilter = (interaction: ModalSubmitInteraction) => boolean;
@@ -31,13 +33,12 @@ export default class TwModal implements TwGenericComponent<ModalSubmitInteractio
   public filter?: modalFilter;
 
   constructor(label: string) {
-    // Replace Math.random with a more secure ID generation method
     this.id = `mdl_${Date.now()}_${crypto.randomUUID().slice(0, 8)}`;
 
     this.modal = new ModalBuilder().setTitle(label).setCustomId(this.id);
   }
 
-  addInput(label: string, id: string, style: TextInputStyle = TextInputStyle.Short) {
+  addInput(label: string, id: string, style: TextInputStyle = TextInputStyle.Short): void {
     const input = new TextInputBuilder().setCustomId(id).setLabel(label).setStyle(style);
 
     const actionRow = new ActionRowBuilder<ModalActionRowComponentBuilder>();
@@ -46,29 +47,60 @@ export default class TwModal implements TwGenericComponent<ModalSubmitInteractio
     this.modal.setComponents(actionRow);
   }
 
-  public middleware(interaction: ModalSubmitInteraction): void {
-    if (this.filter && this.callback && this.filter(interaction)) {
-      this.callback(interaction);
-    } else if (this.callback) {
-      this.callback(interaction);
-    } else {
-      interaction.reply({
-        content:
-          "<:statusurgent:960959148848214017> This form is no longer valid or you don't have permission to submit it.",
-        flags: [MessageFlagsBitField.Flags.Ephemeral],
-      });
+  public async middleware(interaction: ModalSubmitInteraction): Promise<void> {
+    try {
+      if (this.filter && this.callback && this.filter(interaction)) {
+        await handleApiError(
+          null,
+          async () => {
+            if (this.callback) await this.callback(interaction);
+          },
+          2, // retry count
+          500 // retry delay
+        );
+      } else if (this.callback) {
+        await handleApiError(
+          null,
+          async () => {
+            if (this.callback) await this.callback(interaction);
+          },
+          2, // retry count
+          500 // retry delay
+        );
+      } else {
+        await interaction.reply({
+          content:
+            "<:statusurgent:960959148848214017> This form is no longer valid or you don't have permission to submit it.",
+          flags: [MessageFlagsBitField.Flags.Ephemeral],
+        });
+      }
+    } catch (error) {
+      logger.error(`Modal middleware error for ${this.id}: ${error}`);
+
+      if (!interaction.replied && !interaction.deferred) {
+        try {
+          await interaction.reply({
+            content: "An error occurred while processing this form.",
+            flags: [MessageFlagsBitField.Flags.Ephemeral],
+          });
+        } catch (replyError) {
+          logger.error(`Failed to send error response: ${replyError}`);
+        }
+      }
     }
   }
 
   public _middleware(interaction: ModalSubmitInteraction): void {
-    return this.middleware(interaction);
+    this.middleware(interaction).catch((err) =>
+      logger.error(`Uncaught error in modal middleware: ${err}`)
+    );
   }
 
-  close() {
+  close(): void {
     ModalInteractionQueue.delete(this.id);
   }
 
-  onSubmit(callback: modalSubmit) {
+  onSubmit(callback: modalSubmit): void {
     this.callback = callback;
     ModalInteractionQueue.set(this.id, this);
   }

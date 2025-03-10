@@ -182,7 +182,7 @@ export const createShardProcessLock = (shardId: number | string): boolean => {
  * @param processType The process type (main or shard)
  * @param shardId The shard ID (if processType is SHARD)
  */
-export const removeProcessLock = (processType: ProcessType | string, shardId?: number): void => {
+export function removeProcessLock(processType: ProcessType | string, shardId?: number): void {
   try {
     let lockFile: string;
 
@@ -211,7 +211,7 @@ export const removeProcessLock = (processType: ProcessType | string, shardId?: n
   } catch (err) {
     console.error(`Failed to remove lock file: ${err}`);
   }
-};
+}
 
 /**
  * Check for existing processes and clean up stale locks

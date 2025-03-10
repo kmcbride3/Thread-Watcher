@@ -1,15 +1,12 @@
 import {
-  ColorResolvable,
-  SlashCommandBuilder,
-  SlashCommandSubcommandsOnlyBuilder,
-  PermissionResolvable,
-  ChatInputCommandInteraction,
-  EmbedBuilder,
   AutocompleteInteraction,
-  ActionRowBuilder,
+  ChatInputCommandInteraction,
+  PermissionResolvable,
+  SlashCommandBuilder,
   SlashCommandOptionsOnlyBuilder,
-  MessageActionRowComponentBuilder,
+  SlashCommandSubcommandsOnlyBuilder,
 } from "discord.js";
+import { EmbedBuilderFunction, EmbedBuilderOptions } from "../utilities/embedUtils";
 
 export enum statusType {
   error = "error",
@@ -24,22 +21,9 @@ export interface builderField<T = unknown> {
   inline?: boolean;
 }
 
-export interface baseEmbedOptions {
-  description?: string;
-  color?: ColorResolvable;
-  fields?: { name: string; value: string | number; inline?: boolean }[];
-  flags?: number[];
-  showAuthor?: boolean;
-  components?: ActionRowBuilder<MessageActionRowComponentBuilder>[];
-  noSend?: boolean;
-}
-
-// Define the type for the buildBaseEmbed function
-export type BuildBaseEmbedFunction = (
-  title: string,
-  status?: statusType,
-  options?: baseEmbedOptions
-) => EmbedBuilder;
+// Export baseEmbedOptions as an alias to EmbedBuilderOptions for backward compatibility
+export type baseEmbedOptions = EmbedBuilderOptions;
+export type BuildBaseEmbedFunction = EmbedBuilderFunction;
 
 export interface Gatekeeping {
   ownerOnly: boolean;
@@ -57,12 +41,12 @@ export interface Command {
   externalOptions?: unknown[];
   run: (
     interaction: ChatInputCommandInteraction,
-    buildBaseEmbed: (title: string, status: statusType, misc?: baseEmbedOptions) => EmbedBuilder
+    buildBaseEmbed: EmbedBuilderFunction
   ) => Promise<void>;
 
   execute?: (
     interaction: ChatInputCommandInteraction,
-    buildBaseEmbed: (title: string, status: statusType, misc?: baseEmbedOptions) => EmbedBuilder
+    buildBaseEmbed: EmbedBuilderFunction
   ) => Promise<void>;
 
   autocomplete?: (interaction: AutocompleteInteraction) => Promise<void>;

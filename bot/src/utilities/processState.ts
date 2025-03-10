@@ -44,12 +44,7 @@ export function isShard(): boolean {
 
   // Check if this process was spawned by a sharding manager
   // This might be unreliable but adds an extra check
-  if (process.send && typeof process.send === "function") {
-    return true; // Child processes have IPC channel
-  }
-
-  // By default, assume it's not a shard
-  return false;
+  return Boolean(typeof process.send === "function");
 }
 
 /**
@@ -83,3 +78,25 @@ export function getShardId(): number {
 export const isMainProcess = (): boolean => {
   return processState.role === ProcessRole.MAIN;
 };
+
+/**
+ * Set up minimal signal handling for the current process role
+ * This only sets up basic handlers that won't conflict with ShutdownManager
+ */
+export function setupMinimalSignalHandlers(): void {
+  // For shards, just log when signals are received
+  if (isShard()) {
+    const shardId = getShardId();
+
+    // Only log signals, don't take action
+    process.on("SIGINT", () => {
+      console.log(`[SHARD ${shardId}] Received SIGINT, waiting for parent process instructions`);
+    });
+
+    process.on("SIGTERM", () => {
+      console.log(`[SHARD ${shardId}] Received SIGTERM, waiting for parent process instructions`);
+    });
+
+    // For main process, ShutdownManager will handle signals
+  }
+}
