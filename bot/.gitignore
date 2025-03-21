@@ -70,4 +70,4 @@ thread-watcher-locks/
 !.yarn/releases
 !.yarn/sdks
 !.yarn/versions
-.pnp.*
+.yarn/**/*
