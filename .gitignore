@@ -13,9 +13,16 @@
 *.sln
 *.sw?
 .vscode/settings.json
-
+.gitignore
+./.yarn/**/*
 
 # Scripts directory
 scripts/*
 scripts/**/*
 .vscode/settings.json
+
+# Data directory
+./data/backups/**/*/
+./data/locks/**/*/
+./data/logs/**/*/
+./data/data.db
