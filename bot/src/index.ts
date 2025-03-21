@@ -9,39 +9,39 @@ import {
   Shard,
   ShardingManager,
   WebhookClient,
-} from "discord.js"
-import { AutoPoster } from "topgg-autoposter"
-import { initBot } from "./bot"
-import { Database } from "./interfaces/database"
-import { SERVICE_KEYS, serviceRegistry } from "./services"
-import { getConfig } from "./utilities/cnf"
-import { initializeDatabase } from "./utilities/database/DatabaseManager"
-import { logMemoryUsage, trackInitState } from "./utilities/debugUtils"
-import { ErrorSeverity, handleApiError } from "./utilities/errorSystem"
-import loadCommands from "./utilities/loadCommands"
-import { initLogger, logToFile, safeLog } from "./utilities/logger"
+} from "discord.js";
+import { AutoPoster } from "topgg-autoposter";
+import { initBot } from "./bot";
+import { Database } from "./interfaces/database";
+import { SERVICE_KEYS, serviceRegistry } from "./services";
+import { getConfig } from "./utilities/cnf";
+import { initializeDatabase } from "./utilities/database/DatabaseManager";
+import { logMemoryUsage, trackInitState } from "./utilities/debugUtils";
+import { ErrorSeverity, handleApiError } from "./utilities/errorSystem";
+import loadCommands from "./utilities/loadCommands";
+import { initLogger, logToFile, safeLog } from "./utilities/logger";
 import {
   getShardId,
   isMainProcess,
   isShard,
   ProcessRole,
   processState,
-} from "./utilities/processState"
-import { rateLimitManager } from "./utilities/rateLimitManager"
+} from "./utilities/processState";
+import { rateLimitManager } from "./utilities/rateLimitManager";
 import {
   checkCommandChange,
   clearCommands,
   genCommandHash,
   registerCommands,
-} from "./utilities/registerCommands"
-import scheduleBackups from "./utilities/routines/backup"
-import reloadCommands from "./utilities/routines/reloadCommands"
+} from "./utilities/registerCommands";
+import scheduleBackups from "./utilities/routines/backup";
+import reloadCommands from "./utilities/routines/reloadCommands";
 import {
   createShutdownManager,
   exitProcess,
   initializeShutdownHandlers,
   ShutdownPriority,
-} from "./utilities/shutdown"
+} from "./utilities/shutdown";
 import {
   acquireInitLock,
   cleanupStaleLocks,
@@ -49,9 +49,9 @@ import {
   createShardProcessLock,
   ProcessType,
   removeProcessLock,
-} from "./utilities/startup"
-import { threadManager } from "./utilities/threadManager"
-import start from "./web"
+} from "./utilities/startup";
+import { threadManager } from "./utilities/threadManager";
+import start from "./web";
 
 // Load config file immediately
 const _configData = getConfig();
@@ -1639,7 +1639,7 @@ function setupEntryPoint(): void {
 setupEntryPoint();
 
 // Export necessary objects and functions
-export { _configData as config }
+export { _configData as config };
 
 /**
  * Get the ShardManager instance
@@ -1706,5 +1706,4 @@ async function registerShutdownTask(): Promise<void> {
 
 // Setup proper signal handling for the current process type
 initializeShutdownHandlers(isShard());
-export { serviceRegistry } from "./services"
-
+export { serviceRegistry } from "./services";

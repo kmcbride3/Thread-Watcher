@@ -1,13 +1,13 @@
-import { Client, Collection, Events, GatewayDispatchEvents, GatewayIntentBits } from "discord.js"
-import { logger } from "./index"
-import { Command } from "./interfaces/command"
-import { SERVICE_KEYS, serviceRegistry } from "./services"
-import { handleApiError } from "./utilities/apiErrorHandler"
-import loadCommands from "./utilities/loadCommands"
-import loadEvents from "./utilities/loadEvents"
-import { isShard } from "./utilities/processState"
-import { safeObjectAccess } from "./utilities/securityUtils"
-import { isThreadChannel } from "./utilities/threadUtils"
+import { Client, Collection, Events, GatewayDispatchEvents, GatewayIntentBits } from "discord.js";
+import { logger } from "./index";
+import { Command } from "./interfaces/command";
+import { SERVICE_KEYS, serviceRegistry } from "./services";
+import { handleApiError } from "./utilities/apiErrorHandler";
+import loadCommands from "./utilities/loadCommands";
+import loadEvents from "./utilities/loadEvents";
+import { isShard } from "./utilities/processState";
+import { safeObjectAccess } from "./utilities/securityUtils";
+import { isThreadChannel } from "./utilities/threadUtils";
 
 // Store commands in a private collection that's accessed through a getter
 const _commands = new Collection<string, Command>();

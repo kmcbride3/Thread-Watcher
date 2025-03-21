@@ -1,7 +1,7 @@
-import fs from "fs"
-import path from "path"
-import { safeLog } from "./logger"
-import { ensureDirectoryExists, SafeDirectoryPath } from "./securityUtils"
+import fs from "fs";
+import path from "path";
+import { safeLog } from "./logger";
+import { ensureDirectoryExists, SafeDirectoryPath } from "./securityUtils";
 
 /**
  * Process types for lock files
