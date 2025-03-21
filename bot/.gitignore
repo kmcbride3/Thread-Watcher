@@ -17,6 +17,28 @@ Thumbs.db
 Desktop.ini
 .vscode/settings.json
 
+*.db
+
+# Editor directories and files
+/.vscode
+**/.vscode/*
+.vscode/
+.vscode/**/*
+.idea/
+*.sublime-*
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.vscode/settings.json
+../.vscode
+
+# Scripts directory
+scripts/*
+scripts/**/*
+.vscode/settings.json
+
 # Log files
 logs/
 *.log
