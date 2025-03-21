@@ -1,7 +1,9 @@
 *.db
 
 # Editor directories and files
-.vscode/*
+/.vscode
+**/.vscode/*
+.vscode/
 .vscode/**/*
 .idea/
 *.sublime-*
@@ -16,3 +18,4 @@
 # Scripts directory
 scripts/*
 scripts/**/*
+.vscode/settings.json
