@@ -21,7 +21,7 @@ const eventCache = new Collection<string, { default: EventModule<keyof ClientEve
  * Loads all event handlers from the events directory
  */
 export default async function loadEvents(client: Client, logger: Log76): Promise<void> {
-  logger.debug("Loading events...");
+  logger.trace("Loading events...");
 
   try {
     const eventsPath = path.join(__dirname, "../events");
@@ -124,12 +124,12 @@ export default async function loadEvents(client: Client, logger: Log76): Promise
 
     await Promise.all(loadPromises);
 
-    logger.debug(
+    logger.trace(
       `Loaded ${loadedCount} event handlers ${skippedCount > 0 ? `(${skippedCount} skipped)` : ""}`
     );
 
     const registeredEvents = client.eventNames();
-    logger.debug(`Registered events: ${registeredEvents.join(", ")}`);
+    logger.trace(`Registered events: ${registeredEvents.join(", ")}`);
   } catch (error) {
     logger.error(
       `Failed to load events: ${error instanceof Error ? error.message : String(error)}`

@@ -5,6 +5,7 @@ import path from "path";
 import { logger } from "../index";
 import { Command } from "../interfaces/command";
 import { ConfigFile } from "./cnf/index";
+import { validateCommandOptions } from "./commandValidator";
 import { ErrorSeverity, handleApiError } from "./errorSystem";
 import loadCommands from "./loadCommands";
 import { rateLimitManager } from "./rateLimitManager";
@@ -14,6 +15,16 @@ export async function registerCommands(global: boolean, config: ConfigFile): Pro
 
   try {
     const commandsCollection = await loadCommands();
+
+    // Validate commands before proceeding with registration
+    const validationErrors = validateCommandOptions(Array.from(commandsCollection.values()));
+    if (validationErrors.length > 0) {
+      logger.error("Command validation failed with the following errors:");
+      validationErrors.forEach((error) => {
+        logger.error(`- ${error.commandName}: ${error.message}`);
+      });
+      return Promise.reject(new Error("Command validation failed - check logs for details"));
+    }
 
     const publicCommands = commandsCollection.filter((cmd) => !cmd.gatekeeping?.devServerOnly);
     const privateCommands = commandsCollection.filter((cmd) => cmd.gatekeeping?.devServerOnly);
@@ -33,6 +44,7 @@ export async function registerCommands(global: boolean, config: ConfigFile): Pro
 
     const rest = new REST({ version: "10" }).setToken(config.tokens.discord);
 
+    // Set up rate limit handling for the REST instance
     rest.on("rateLimited", (rateLimitInfo) => {
       rateLimitManager.handleRateLimit(rateLimitInfo);
     });
@@ -58,6 +70,7 @@ export async function registerCommands(global: boolean, config: ConfigFile): Pro
       logger.info(`Registering ${publicCommands.size} commands globally`);
 
       const registerGlobalCommands = async () => {
+        // Wait for rate limit before proceeding with global command registration
         await rateLimitManager.waitForRateLimit("application/commands");
         return rest.put(Routes.applicationCommands(config.clientID), {
           body: publicCommands.map(commandToJson),
@@ -83,6 +96,7 @@ export async function registerCommands(global: boolean, config: ConfigFile): Pro
         logger.info(`Registering ${devCommands.size} commands to development server`);
 
         const registerDevCommands = async () => {
+          // Wait for rate limit before proceeding with dev server command registration
           await rateLimitManager.waitForRateLimit(
             `applications/${config.clientID}/guilds/${config.devServer}/commands`
           );

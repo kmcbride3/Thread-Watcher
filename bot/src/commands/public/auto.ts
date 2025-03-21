@@ -5,8 +5,9 @@ import {
   PermissionFlagsBits,
   SlashCommandBuilder,
 } from "discord.js";
-import { Command, statusType } from "../../interfaces/command";
+import { Command } from "../../interfaces/command";
 import { handleApiError, handleCommandError } from "../../utilities/errorSystem";
+import { StatusType } from "../../utilities/logger";
 import { rateLimitManager } from "../../utilities/rateLimitManager";
 import { THREAD_CAPABLE_CHANNEL_TYPES } from "../../utilities/threadUtils";
 
@@ -20,7 +21,7 @@ const auto: Command = {
       await handleApiError(
         "Failed to process auto command",
         async () => {
-          const embed = buildBaseEmbed("Deprecated Command", statusType.warning, {
+          const embed = buildBaseEmbed("Deprecated Command", "warning" as StatusType, {
             description: "The functionality of this command has been moved to `/batch`",
           });
 

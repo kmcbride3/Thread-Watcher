@@ -5,10 +5,11 @@ import {
   PermissionFlagsBits,
   SlashCommandBuilder,
 } from "discord.js";
-import { botSettings } from "../../bot";
-import { Command, statusType } from "../../interfaces/command";
+import { Command } from "../../interfaces/command";
+import { SERVICE_KEYS, serviceRegistry } from "../../services";
 import { EmbedBuilderFunction } from "../../utilities/embedUtils";
 import { ErrorSeverity, handleApiError, handleCommandError } from "../../utilities/errorSystem";
+import { StatusType } from "../../utilities/logger";
 import { rateLimitManager } from "../../utilities/rateLimitManager";
 
 const configCommand: Command = {
@@ -44,7 +45,7 @@ const configCommand: Command = {
           }
         );
       } else {
-        responseEmbed = embedBuilder("Invalid Settings", statusType.error, {
+        responseEmbed = embedBuilder("Invalid Settings", "error" as StatusType, {
           description: "Unknown settings group requested",
         });
       }
@@ -134,9 +135,13 @@ async function handleLogsConfig(
   action: string,
   embedBuilder: EmbedBuilderFunction
 ): Promise<EmbedBuilder> {
-  if (!botSettings) {
+  if (!serviceRegistry.isAvailable(SERVICE_KEYS.USER_SETTINGS)) {
     throw new Error("Bot settings service is unavailable");
   }
+
+  const userSettings = serviceRegistry.get(SERVICE_KEYS.USER_SETTINGS, {
+    errorContext: "Config Command - User Settings Access",
+  });
 
   const guildId = interaction.guildId ?? "";
 
@@ -144,11 +149,8 @@ async function handleLogsConfig(
     return await handleApiError(
       "Failed to reset log channel configuration",
       async () => {
-        if (!botSettings) {
-          throw new Error("Bot settings service is unavailable");
-        }
-        await botSettings.removeSetting(guildId, "LOGCHANNEL");
-        return embedBuilder("Configuration Updated", statusType.success, {
+        await userSettings.removeSetting(guildId, "LOGCHANNEL");
+        return embedBuilder("Configuration Updated", "success" as StatusType, {
           description: "Log channel has been reset to default value",
         });
       },
@@ -163,11 +165,8 @@ async function handleLogsConfig(
     return await handleApiError(
       "Failed to update log channel configuration",
       async () => {
-        if (!botSettings) {
-          throw new Error("Bot settings service is unavailable");
-        }
-        await botSettings.setSetting(guildId, "LOGCHANNEL", selectedChannel.id);
-        return embedBuilder("Configuration Updated", statusType.success, {
+        await userSettings.setSetting(guildId, "LOGCHANNEL", selectedChannel.id);
+        return embedBuilder("Configuration Updated", "success" as StatusType, {
           description: `Log channel has been set to <#${selectedChannel.id}>`,
         });
       },
@@ -177,7 +176,7 @@ async function handleLogsConfig(
       }
     );
   } else {
-    return embedBuilder("Invalid Action", statusType.error, {
+    return embedBuilder("Invalid Action", "error" as StatusType, {
       description: "Unknown log configuration action requested",
     });
   }
@@ -192,9 +191,13 @@ async function handleBehaviourConfig(
   action: string,
   embedBuilder: EmbedBuilderFunction
 ): Promise<EmbedBuilder> {
-  if (!botSettings) {
+  if (!serviceRegistry.isAvailable(SERVICE_KEYS.USER_SETTINGS)) {
     throw new Error("Bot settings service is unavailable");
   }
+
+  const userSettings = serviceRegistry.get(SERVICE_KEYS.USER_SETTINGS, {
+    errorContext: "Config Command - Behavior Settings Access",
+  });
 
   const guildId = interaction.guildId ?? "";
 
@@ -202,8 +205,8 @@ async function handleBehaviourConfig(
     return await handleApiError(
       "Failed to reset thread behavior configuration",
       async () => {
-        await botSettings?.removeSetting(guildId, "BEHAVIOUR");
-        return embedBuilder("Configuration Updated", statusType.success, {
+        await userSettings.removeSetting(guildId, "BEHAVIOUR");
+        return embedBuilder("Configuration Updated", "success" as StatusType, {
           description: "Thread behavior has been reset to default value",
         });
       },
@@ -220,8 +223,8 @@ async function handleBehaviourConfig(
     return await handleApiError(
       "Failed to update thread behavior configuration",
       async () => {
-        await botSettings?.setSetting(guildId, "BEHAVIOUR", selectedBehavior);
-        return embedBuilder("Configuration Updated", statusType.success, {
+        await userSettings.setSetting(guildId, "BEHAVIOUR", selectedBehavior);
+        return embedBuilder("Configuration Updated", "success" as StatusType, {
           description: `Thread behavior has been set to "${behaviorDescription}"`,
         });
       },
@@ -231,7 +234,7 @@ async function handleBehaviourConfig(
       }
     );
   } else {
-    return embedBuilder("Invalid Action", statusType.error, {
+    return embedBuilder("Invalid Action", "error" as StatusType, {
       description: "Unknown behavior configuration action requested",
     });
   }

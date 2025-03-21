@@ -17,6 +17,12 @@ export type ChannelData = ReturnData & {
 export interface Database {
   createTables: () => Promise<void>;
   insertChannel: (data: ChannelData) => Promise<void>;
+  /**
+   * Insert a thread into the database
+   * @param id The thread ID
+   * @param dueArchive When the thread is due to be archived
+   * @param server The server ID
+   */
   insertThread: (id: string, dueArchive: number, server: string) => Promise<void>;
   updateDueArchive: (id: string, dueArchive: number) => Promise<void>;
   getChannels: (server: string) => Promise<ChannelData[]>;
@@ -33,6 +39,7 @@ export interface Database {
   createBackup: (baseDir: string) => Promise<string>;
   getAllWatchedThreads: () => Promise<ThreadData[]>;
   close: () => Promise<void>;
+  isChannelWatched: (channelId: string, guildId: string) => Promise<boolean>;
 }
 
 export interface BackupProvider {

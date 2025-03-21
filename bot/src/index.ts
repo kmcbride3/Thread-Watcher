@@ -5,6 +5,7 @@ import {
   Colors,
   EmbedBuilder,
   GatewayIntentBits,
+  RateLimitData,
   Shard,
   ShardingManager,
   WebhookClient,
@@ -12,13 +13,20 @@ import {
 import { AutoPoster } from "topgg-autoposter"
 import { initBot } from "./bot"
 import { Database } from "./interfaces/database"
-import { getConfig } from "./utilities/cnf/index"
+import { SERVICE_KEYS, serviceRegistry } from "./services"
+import { getConfig } from "./utilities/cnf"
 import { initializeDatabase } from "./utilities/database/DatabaseManager"
 import { logMemoryUsage, trackInitState } from "./utilities/debugUtils"
 import { ErrorSeverity, handleApiError } from "./utilities/errorSystem"
 import loadCommands from "./utilities/loadCommands"
-import { initLogger, Log76, logToFile } from "./utilities/logger"
-import { getShardId, isShard, ProcessRole, processState } from "./utilities/processState"
+import { initLogger, logToFile, safeLog } from "./utilities/logger"
+import {
+  getShardId,
+  isMainProcess,
+  isShard,
+  ProcessRole,
+  processState,
+} from "./utilities/processState"
 import { rateLimitManager } from "./utilities/rateLimitManager"
 import {
   checkCommandChange,
@@ -31,7 +39,7 @@ import reloadCommands from "./utilities/routines/reloadCommands"
 import {
   createShutdownManager,
   exitProcess,
-  ShutdownManager,
+  initializeShutdownHandlers,
   ShutdownPriority,
 } from "./utilities/shutdown"
 import {
@@ -42,76 +50,86 @@ import {
   ProcessType,
   removeProcessLock,
 } from "./utilities/startup"
+import { threadManager } from "./utilities/threadManager"
 import start from "./web"
 
-// Global variables
-const isShardProcess = isShard();
-const showInitMessages = Boolean(process.env.INIT_DEBUG);
-const configData = getConfig();
-let manager: ShardingManager;
-let shuttingDown = false;
-const shards: Shard[] = [];
-let shardsDestroyed = false;
-let hasInitialized = false;
-// skipcq: JS-E1009
-export let db: Database;
-// skipcq: JS-E1009
-export let shutdownManager: ShutdownManager;
-// skipcq: JS-E1009
-export let logger: Log76;
+// Load config file immediately
+const _configData = getConfig();
 
-// Add diagnostic logging if enabled
-if (showInitMessages) {
-  console.log(`[${process.pid}] Process starting with argv: ${process.argv.join(" ")}`);
-  console.log(
-    `[${process.pid}] Environment variables: IS_SHARD=${process.env.IS_SHARD || "undefined"}, SHARD_ID=${process.env.SHARD_ID || "undefined"}`
-  );
-  console.log(`[${process.pid}] isShard() returns: ${isShardProcess}`);
+// Track initialization state consistently across the app
+let _applicationStartupComplete = false;
+let _messagesSuppressed = false;
+
+// Initialize logger as early as possible
+export const logger = initLogger({
+  logLevel: _configData.logLevel,
+  logBold: _configData.logBold || false,
+  logInverted: _configData.logInverted || false,
+  logToFile: _configData.logToFile || false,
+  silent: false, // Never silence logger during startup
+});
+
+// Register core services right away
+serviceRegistry.register(SERVICE_KEYS.LOGGER, logger);
+serviceRegistry.register(SERVICE_KEYS.CONFIG, _configData);
+
+// Global variables with proper underscore prefix for private vars
+const _isShardProcess = isShard();
+let _shardManager: ShardingManager;
+let _localShutdownManager: ReturnType<typeof createShutdownManager>;
+let _shuttingDown = false;
+const _shards: Shard[] = [];
+let _shardsDestroyed = false;
+let _hasInitialized = false;
+let _isStartupInProgress = false;
+let _spawnTimeoutId: NodeJS.Timeout | null = null;
+let _shardSpawningInProgress = false;
+
+// Global shutdown flag
+declare global {
+  // eslint-disable-next-line no-var
+  var isShuttingDown: boolean;
 }
+global.isShuttingDown = false;
 
 // Only show the Thread-Watcher startup message once in the main process
-if (!isShardProcess) {
-  console.log("Starting Thread-Watcher application...");
+if (!_isShardProcess) {
+  if (logger) {
+    logger.info("Starting Thread-Watcher application...");
+  } else {
+    console.log("Starting Thread-Watcher application...");
+  }
 }
 
-/**
- * Safe logging function that works before logger initialization
- */
-const safeLog = (level: string, message: string): void => {
-  if (logger && typeof logger[level as keyof typeof logger] === "function") {
-    try {
-      const logFn = logger[level as keyof typeof logger] as unknown as (msg: string) => void;
-      logFn(message);
-      return;
-    } catch {
-      // Fall back to console if logger method fails
-    }
-  }
+// Module-level tracking flags to prevent duplicate initializations
+let _shutdownManagerInitialized = false;
+let _taskRegistrationComplete = false;
 
-  const timestamp = new Date().toISOString();
-  if (level === "error") {
-    console.error(`${timestamp} [ERROR] ${message}`);
-  } else if (level === "warn") {
-    console.warn(`${timestamp} [WARN] ${message}`);
-  } else {
-    console.log(`${timestamp} [${level.toUpperCase()}] ${message}`);
-  }
-};
+// Timeouts collection for proper cleanup
+const _initTimeouts = new Set<NodeJS.Timeout>();
+
+const _shardTimeoutMap = new Collection<string, NodeJS.Timeout>();
 
 /**
  * Initialize Discord REST client
  */
+let _discordClient: Client | null = null;
+
 const initDiscordClient = (): Client => {
-  const client = new Client({
+  if (_discordClient) {
+    return _discordClient;
+  }
+
+  _discordClient = new Client({
     intents: [GatewayIntentBits.Guilds],
   });
 
   // Setup rate limit handlers
-  client.rest.on("rateLimited", (rateLimitInfo) => {
+  _discordClient.rest.on("rateLimited", (rateLimitInfo) => {
     rateLimitManager.handleRateLimit(rateLimitInfo);
   });
 
-  client.rest.on("request", async (request) => {
+  _discordClient.rest.on("request", async (request) => {
     const route = request.route;
     if (rateLimitManager.isRateLimited(route)) {
       const resetTime = rateLimitManager.getRateLimitedUntil(route);
@@ -123,23 +141,64 @@ const initDiscordClient = (): Client => {
     return request.make();
   });
 
-  return client;
+  // Register client in service registry
+  serviceRegistry.register(SERVICE_KEYS.CLIENT, _discordClient);
+
+  return _discordClient;
 };
+
+/**
+ * Safe getter for local shutdown manager to avoid circular dependencies
+ * Ensures a shutdown manager is always available even during initialization
+ */
+export function getShutdownManager(): ReturnType<typeof createShutdownManager> {
+  // First check our local instance which is guaranteed to exist
+  if (_localShutdownManager) {
+    return _localShutdownManager;
+  }
+
+  // Next try the service registry, but handle errors safely
+  try {
+    // Only try the registry if we know it won't throw an error
+    if (serviceRegistry.isAvailable(SERVICE_KEYS.SHUTDOWN_MANAGER)) {
+      return serviceRegistry.get(SERVICE_KEYS.SHUTDOWN_MANAGER);
+    }
+  } catch {
+    // Silent catch - just fall through to create a new manager
+  }
+
+  // If all else fails, create a new temporary manager
+  // This ensures we always return something usable
+  if (!_localShutdownManager) {
+    logger.debug("Creating emergency shutdown manager instance");
+    const tempClient = new Client({ intents: [] }); // Minimal client for the manager
+    _localShutdownManager = createShutdownManager(tempClient);
+
+    // Register the shutdown manager in the service registry
+    if (!serviceRegistry.isAvailable(SERVICE_KEYS.SHUTDOWN_MANAGER)) {
+      serviceRegistry.register(SERVICE_KEYS.SHUTDOWN_MANAGER, _localShutdownManager);
+
+      _shutdownManagerInitialized = true;
+    }
+  }
+
+  return _localShutdownManager;
+}
 
 /**
  * Handle shards destruction during shutdown
  */
 const destroyShards = (): void => {
-  if (shardsDestroyed) return;
-  shardsDestroyed = true;
+  if (_shardsDestroyed) return;
+  _shardsDestroyed = true;
 
-  for (const shard of shards) {
+  for (const shard of _shards) {
     if (shard.process && !shard.process.killed) {
       try {
         shard.kill();
-        safeLog("debug", `Killed shard ${shard.id}`);
+        safeLog("debug", `Killed shard ${shard.id}`, "SHUTDOWN");
       } catch (err) {
-        safeLog("error", `Failed to kill shard ${shard.id}: ${String(err)}`);
+        safeLog("error", `Failed to kill shard ${shard.id}: ${String(err)}`, "SHUTDOWN");
       }
     }
   }
@@ -147,22 +206,34 @@ const destroyShards = (): void => {
 
 /**
  * Log to webhook if configured
+ * @param title - Message title
+ * @param description - Message description
+ * @param color - Message color
+ * @returns Promise that resolves when the webhook message is sent
  */
-const webLog = async (
+export async function webLog(
   title: string,
   description: string | null,
-  colour: ColorResolvable = Colors.Aqua
-): Promise<void> => {
-  if (!configData.logWebhook) return;
+  color: ColorResolvable = Colors.Aqua
+): Promise<void> {
+  if (!_configData.logWebhook) return;
+
+  // Validate the webhook URL
+  try {
+    new URL(_configData.logWebhook);
+  } catch {
+    safeLog("error", "Invalid webhook URL provided in _configData.logWebhook", "WEBHOOK");
+    return;
+  }
 
   try {
-    const webhookClient = new WebhookClient({ url: configData.logWebhook });
-    const embed = new EmbedBuilder().setTitle(title).setTimestamp(new Date()).setColor(colour);
+    const webhookClient = new WebhookClient({ url: _configData.logWebhook });
+    const embed = new EmbedBuilder().setTitle(title).setTimestamp(new Date()).setColor(color);
 
     if (description) embed.setDescription(description);
 
     const logMessage = `${title}: ${description || ""}`;
-    await logToFile(logMessage);
+    void logToFile(logMessage);
 
     await webhookClient.send({
       username: "Thread-Watcher",
@@ -172,16 +243,20 @@ const webLog = async (
   } catch (error) {
     safeLog(
       "error",
-      `Failed to send webhook: ${error instanceof Error ? error.message : String(error)}`
+      `Failed to send webhook: ${error instanceof Error ? error.message : String(error)}`,
+      "WEBHOOK"
     );
   }
-};
+}
 
 /**
  * Main shutdown handler for master process
  */
 const handleMainShutdown = async (reason: string): Promise<void> => {
-  if (shuttingDown) {
+  global.isShuttingDown = true;
+
+  // Prevent duplicate shutdown attempts
+  if (_shuttingDown) {
     safeLog(
       "debug",
       `Shutdown already in progress, ignoring duplicate shutdown trigger: ${reason}`
@@ -189,78 +264,118 @@ const handleMainShutdown = async (reason: string): Promise<void> => {
     return;
   }
 
-  safeLog("info", `[${processState.role.toUpperCase()}] Shutdown initiated due to: ${reason}`);
+  safeLog("info", `Shutdown initiated due to: ${reason}`, "SHUTDOWN");
   trackInitState(`Main process shutdown started: ${reason}`);
-  shuttingDown = true;
+  _shuttingDown = true;
 
-  // Notify all shards to shut down
-  if (manager) {
-    safeLog(
-      "debug",
-      `[${processState.role.toUpperCase()}] Sending shutdown signal to ${manager.shards.size} shards`
-    );
+  // Set a single force exit timeout
+  const forceExitTimeout = setTimeout(() => {
+    safeLog("error", "Shutdown taking too long - forcing exit");
+    process.exit(1);
+  }, 15000); // Force exit after 15 seconds no matter what
 
-    const shutdownPromises = [];
-    for (const shard of manager.shards.values()) {
-      if (shard.process && !shard.process.killed) {
-        shutdownPromises.push(
-          shard
-            .send("shutdown")
-            .catch((err) =>
-              safeLog(
-                "error",
-                `Failed to send shutdown signal to shard ${shard.id}: ${String(err)}`
+  try {
+    // Notify all shards to shut down
+    const shardManager = getShardManager();
+    if (shardManager && shardManager.shards.size > 0) {
+      safeLog("debug", `Sending shutdown signal to ${shardManager.shards.size} shards`);
+
+      // First wait for all shards to get the signal
+      const shutdownPromises = [];
+      for (const shard of shardManager.shards.values()) {
+        if (shard.process && !shard.process.killed) {
+          shutdownPromises.push(
+            shard
+              .send("shutdown")
+              .catch((err) =>
+                safeLog(
+                  "error",
+                  `Failed to send shutdown signal to shard ${shard.id}: ${String(err)}`,
+                  "SHUTDOWN"
+                )
               )
-            )
-        );
-      }
-    }
-
-    await Promise.allSettled(shutdownPromises);
-
-    // Give shards more time to process their shutdown sequence before proceeding
-    safeLog(
-      "debug",
-      `[${processState.role.toUpperCase()}] Waiting for shards to shut down (8s timeout)`
-    );
-    await new Promise<void>((resolve) => setTimeout(resolve, 8000));
-  }
-
-  // Use shutdown manager for cleanup if available
-  if (shutdownManager) {
-    try {
-      await shutdownManager.shutdown(0, reason);
-      return;
-    } catch (err) {
-      safeLog("error", `Error during shutdown manager execution: ${String(err)}`);
-      if (db && typeof db.close === "function") {
-        try {
-          await db.close();
-          safeLog("info", "Database closed manually during fallback cleanup");
-        } catch (dbErr) {
-          safeLog("error", `Failed to close database during fallback: ${String(dbErr)}`);
+          );
         }
       }
-    }
-  } else {
-    // Manual cleanup if shutdown manager isn't available
-    if (db && typeof db.close === "function") {
+
+      // Wait for all shutdown messages to be sent
+      await Promise.allSettled(shutdownPromises);
+
+      // Give shards time to begin their shutdown sequence
+      safeLog("debug", `Waiting for shards to acknowledge shutdown (3s grace period)`, "SHUTDOWN");
+      await new Promise<void>((resolve) => setTimeout(resolve, 3000));
+
+      // Now wait for shards to process their shutdown sequence
       try {
-        await db.close();
+        // Force kill any shard that takes too long
+        const killTimeout = setTimeout(() => {
+          safeLog("warn", "Some shards taking too long, forcefully terminating", "SHUTDOWN");
+          destroyShards();
+        }, 5000); // 5s max wait for shards
+
+        // Check if any shards are still alive
+        let allShardsTerminated = false;
+        while (!allShardsTerminated) {
+          allShardsTerminated = true;
+          for (const shard of shardManager.shards.values()) {
+            if (shard.process && !shard.process.killed) {
+              allShardsTerminated = false;
+              break;
+            }
+          }
+
+          if (!allShardsTerminated) {
+            await new Promise<void>((resolve) => setTimeout(resolve, 500));
+          }
+        }
+
+        clearTimeout(killTimeout);
+        safeLog("debug", "All shards terminated successfully", "SHUTDOWN");
       } catch (err) {
-        safeLog("error", `Error closing database: ${String(err)}`);
+        safeLog("warn", `Error waiting for shards to terminate: ${err}`, "SHUTDOWN");
+        // Force destroy any lingering shards
+        destroyShards();
       }
     }
+
+    // Now that shards are handled, proceed with main process shutdown
+    await handleApiError(
+      "Failed to shut down gracefully",
+      async () => {
+        const shutdownManager = getShutdownManager();
+        await shutdownManager.shutdown(0, reason);
+      },
+      {
+        retries: 1,
+        retryDelay: 1000,
+        context: "Main Process Shutdown",
+        reportAtSeverity: ErrorSeverity.HIGH,
+      }
+    );
+
+    // Ensure process locks are removed
+    removeProcessLock(ProcessType.MAIN);
+    return;
+  } catch (err) {
+    safeLog("error", `Error during shutdown manager execution: ${String(err)}`, "SHUTDOWN");
+
+    // Fallback database cleanup
+    try {
+      if (serviceRegistry.isAvailable("database")) {
+        const db = serviceRegistry.get("database") as Database;
+        await db.close();
+        safeLog("info", "Database connections closed during fallback cleanup", "SHUTDOWN");
+      }
+    } catch (dbErr) {
+      safeLog("error", `Failed to close database during fallback: ${String(dbErr)}`, "SHUTDOWN");
+    }
+
+    // Remove the process lock file
+    removeProcessLock(ProcessType.MAIN);
+  } finally {
+    clearTimeout(forceExitTimeout);
+    process.exit(0);
   }
-
-  // Remove the process lock file
-  removeProcessLock(ProcessType.MAIN);
-
-  safeLog("done", `[${processState.role.toUpperCase()}] Shutdown complete. Exiting process.`);
-  trackInitState("Main process exit");
-
-  // Use exitProcess instead of direct process.exit
-  exitProcess(0, `Completed shutdown: ${reason}`);
 };
 
 /**
@@ -269,126 +384,303 @@ const handleMainShutdown = async (reason: string): Promise<void> => {
 function setupEnvironment(): boolean {
   // Prevent multiple initializations
   if (!acquireInitLock()) {
-    safeLog("warn", `Process ${process.pid} tried to initialize again, ignoring.`);
+    safeLog(
+      "warn",
+      `Process ${process.pid} tried to initialize again, ignoring.`,
+      `${processState.role.toUpperCase()}`
+    );
     return false;
   }
 
   if (isShard()) {
-    processState.role = ProcessRole.SHARD;
-    processState.shardId = getShardId();
-    process.env.IS_SHARD = "true";
-
-    if (!createShardProcessLock(processState.shardId)) {
-      safeLog("error", "Failed to create shard lock file. Process may be unstable.");
-    }
-
-    trackInitState(`Shard ${processState.shardId} process starting`);
+    setupShardEnvironment();
   } else {
-    processState.role = ProcessRole.MAIN;
-
-    cleanupStaleLocks();
-
-    if (!createMainProcessLock()) {
-      safeLog("error", "Another main process is already running. Exiting.");
-      exitProcess(1, "Another main process is already running");
-      return false;
-    }
-
-    trackInitState("Main process starting");
-
-    if (showInitMessages) {
-      safeLog("debug", `Main process successfully acquired lock with PID ${process.pid}`);
-      logMemoryUsage();
-    }
+    setupMainEnvironment();
   }
+
   return true;
+}
+
+/**
+ * Set up environment for shard process
+ */
+function setupShardEnvironment(): void {
+  processState.role = ProcessRole.SHARD;
+  processState.shardId = getShardId();
+  process.env.IS_SHARD = "true";
+
+  if (!createShardProcessLock(processState.shardId)) {
+    safeLog(
+      "error",
+      "Failed to create shard lock file. Process may be unstable.",
+      `${processState.role.toUpperCase()} ${processState.shardId}`
+    );
+  }
+
+  trackInitState(`Shard ${processState.shardId} process starting`);
+}
+
+/**
+ * Set up environment for main process
+ */
+function setupMainEnvironment(): void {
+  processState.role = ProcessRole.MAIN;
+
+  cleanupStaleLocks();
+
+  if (!createMainProcessLock()) {
+    safeLog(
+      "error",
+      "Another main process is already running. Exiting.",
+      `${processState.role.toUpperCase()}`
+    );
+    exitProcess(1, "Another main process is already running");
+    return;
+  }
+
+  trackInitState("Main process starting");
+
+  // Check for command line parameter instead of config setting
+  if (process.argv.includes("-debugInit")) {
+    safeLog(
+      "trace",
+      `Main process successfully acquired lock with PID ${process.pid}`,
+      `${processState.role.toUpperCase()}`
+    );
+    logMemoryUsage();
+  }
 }
 
 /**
  * Set up core services needed by both main and shard processes
  */
-function setupCoreServices(): Promise<void> {
-  const loggerInstance = initLogger({
-    logLevel: configData.logLevel,
-    logBold: configData.logBold || false,
-    logInverted: configData.logInverted || false,
-    logToFile: configData.logToFile || false,
-    silent: !showInitMessages,
-  }) as Log76;
+async function setupCoreServices(): Promise<void> {
+  logger.debug("Logger initialized.", `${processState.role.toUpperCase()}`);
 
-  logger = loggerInstance;
-  logger.debug(`[${processState.role.toUpperCase()}] Logger initialized.`);
+  try {
+    // Add initialization tracking
+    logger.debug("Starting core services initialization", `${processState.role.toUpperCase()}`);
 
-  // Initialize Discord client for rate limit handling
-  const discordClient = initDiscordClient();
+    // OPTIMIZATION: Only create Discord client when actually needed
+    // For main process, create a minimal client just for rate limiting
+    // For shards, create a full client
+    const discordClient = _isShardProcess ? initDiscordClient() : new Client({ intents: [] }); // Minimal client for main process
 
-  shutdownManager = createShutdownManager(discordClient);
+    logger.debug("Discord client initialized", `${processState.role.toUpperCase()}`);
 
-  // Register cleanup tasks
-  shutdownManager.registerCleanupTask(
-    async () => {
-      if (db && typeof db.close === "function") {
-        try {
-          await db.close();
-          logger.info("Database connections closed");
-        } catch (err) {
-          logger.error(`Failed to close database: ${String(err)}`);
-        }
-      }
-    },
-    {
-      name: "Database Cleanup",
-      priority: ShutdownPriority.HIGH,
-      timeout: 10000,
+    // Create a local shutdown manager instance BEFORE anything tries to access it
+    if (!_shutdownManagerInitialized && !_localShutdownManager) {
+      // Only create if it doesn't exist and hasn't been initialized
+      _localShutdownManager = createShutdownManager(discordClient);
+      logger.debug("Shutdown manager created", `${processState.role.toUpperCase()}`);
+    } else {
+      logger.debug("Using existing shutdown manager", `${processState.role.toUpperCase()}`);
     }
-  );
 
-  db = initializeDatabase(configData, logger);
-  logger.debug(`[${processState.role.toUpperCase()}] Database initialized successfully`);
+    // Register it immediately to avoid circular dependency issues
+    if (!serviceRegistry.isAvailable(SERVICE_KEYS.SHUTDOWN_MANAGER)) {
+      serviceRegistry.register(SERVICE_KEYS.SHUTDOWN_MANAGER, _localShutdownManager);
+    }
 
-  return Promise.resolve();
+    // Initialize the database
+    const db = initializeDatabase(_configData, logger);
+    logger.debug(`Database initialized successfully`, `${processState.role.toUpperCase()}`);
+    serviceRegistry.register(SERVICE_KEYS.DATABASE, db);
+
+    // Register threadManager before it's used
+    if (!serviceRegistry.isAvailable(SERVICE_KEYS.THREAD_MANAGER)) {
+      serviceRegistry.register(SERVICE_KEYS.THREAD_MANAGER, threadManager);
+      logger.debug(`Thread manager registered successfully`, `${processState.role.toUpperCase()}`);
+    }
+
+    // Register cleanup tasks once
+    // ...existing code...
+
+    // OPTIMIZATION: User settings could be optimized to reduce redundant loading
+    // Only load full settings in shard processes that need them
+    if (_isShardProcess) {
+      try {
+        const UserSettingsModule = await import("./utilities/userSettings");
+        const UserSettings = UserSettingsModule.default || UserSettingsModule;
+        const emptyUserSettings = new UserSettings(db);
+        serviceRegistry.register(SERVICE_KEYS.USER_SETTINGS, emptyUserSettings);
+      } catch (err) {
+        logger.error(
+          `Failed to initialize user settings: ${err}`,
+          `${processState.role.toUpperCase()}`
+        );
+      }
+    } else {
+      // For main process, create minimal settings service if needed
+      // This could be a lightweight version that only loads what the main process needs
+    }
+
+    // Register client only if not already registered
+    if (!serviceRegistry.isAvailable(SERVICE_KEYS.CLIENT)) {
+      serviceRegistry.register(SERVICE_KEYS.CLIENT, discordClient);
+    }
+
+    logger.debug("Core services initialization complete", `${processState.role.toUpperCase()}`);
+    return Promise.resolve();
+  } catch (error) {
+    logger.error(`Failed to setup core services: ${error}`, `${processState.role.toUpperCase()}`);
+    return Promise.reject(error);
+  }
 }
 
 /**
  * Initialize shard-specific functionality
  */
 async function initializeShardProcess(): Promise<void> {
-  logger.debug(
-    `[${processState.role.toUpperCase()} ${processState.shardId}] Running via process ${process.pid}`
+  logger.trace(
+    `Started running via process ${process.pid}`,
+    `${processState.role.toUpperCase()} ${processState.shardId}`
   );
-  await initBot(null, logger, configData, db, shutdownManager);
+
+  // Get services from registry
+  const client = serviceRegistry.get("client") as Client;
+
+  await initBot(client);
+
   logger.debug(
-    `[${processState.role.toUpperCase()} ${processState.shardId}] Initialization completed successfully`
+    `Initialization completed successfully`,
+    processState.role.toString() === "MAIN"
+      ? processState.role.toUpperCase()
+      : `${processState.role.toUpperCase()} ${processState.shardId}`
   );
+
   processState.isInitialized = true;
 
-  // Set up signal handlers for shards - these should only log, not trigger shutdown
+  // Set up message handlers for main process communication - only register once
+  process.removeAllListeners("message"); // Remove any existing message listeners
+
+  process.on("message", (message) => {
+    if (typeof message === "object" && message !== null) {
+      // Handle acknowledgment of our ready message
+      if ("type" in message && message.type === "SHARD_READY_ACK") {
+        logger.trace(`Main process acknowledged our ready status`, `SHARD ${processState.shardId}`);
+      }
+    }
+
+    // For shutdown commands and other message types
+    if (message === "shutdown") {
+      logger.info(
+        `Received shutdown command, shutting down`,
+        processState.role.toString() === "MAIN"
+          ? processState.role.toUpperCase()
+          : `${processState.role.toUpperCase()} ${processState.shardId}`
+      );
+
+      // Acknowledge receipt back to the parent
+      if (process.send) {
+        try {
+          process.send({ type: "SHUTDOWN_ACK", shardId: processState.shardId });
+        } catch (err) {
+          logger.debug(
+            `Failed to acknowledge shutdown: ${err}`,
+            processState.role.toString() === "MAIN"
+              ? processState.role.toUpperCase()
+              : `${processState.role.toUpperCase()} ${processState.shardId}`
+          );
+        }
+      }
+
+      if (serviceRegistry.isAvailable("shutdownManager")) {
+        getShutdownManager()
+          .shutdown(0, "Received shutdown command from main process")
+          .catch((err) =>
+            logger.error(
+              `Error during shutdown: ${err}`,
+              processState.role.toString() === "MAIN"
+                ? processState.role.toUpperCase()
+                : `${processState.role.toUpperCase()} ${processState.shardId}`
+            )
+          );
+      } else {
+        exitProcess(0, "Received shutdown command from main process");
+      }
+    }
+  });
+
+  // Now that we're fully initialized, tell the main process we're ready
+  if (process.send) {
+    try {
+      process.send({
+        type: "SHARD_READY",
+        shardId: processState.shardId,
+        timestamp: Date.now(),
+      });
+      logger.trace(`Sent ready signal to main process`, `SHARD ${processState.shardId}`);
+    } catch (err) {
+      logger.warn(
+        `Failed to send ready signal to main process: ${err}`,
+        `SHARD ${processState.shardId}`
+      );
+    }
+  }
+
+  // Set up signal handlers for shards - improved to handle coordination better
   process.on("SIGINT", () => {
     logger.debug(
-      `[${processState.role.toUpperCase()} ${processState.shardId}] Received SIGINT directly, waiting for main shutdown message`
+      `Received SIGINT directly, waiting for main process coordination`,
+      `${processState.role.toUpperCase()} ${processState.shardId}`
     );
     // DO NOT call shutdown here - parent process will coordinate
+    // Set a safety timeout in case the parent process is unresponsive
+    const safetyTimeout = setTimeout(() => {
+      logger.warn(
+        `No shutdown signal from parent process after 10s, proceeding with self-shutdown`,
+        `${processState.role.toUpperCase()} ${processState.shardId}`
+      );
+      exitProcess(0, "Parent process unresponsive during shutdown");
+    }, 10000); // 10s safety timeout
+
+    // Clear timeout if we receive the expected shutdown message
+    const messageHandler = (message: unknown) => {
+      if (message === "shutdown") {
+        clearTimeout(safetyTimeout);
+        process.off("message", messageHandler); // Remove handler once we get the message
+      }
+    };
+    process.on("message", messageHandler);
   });
 
   process.on("SIGTERM", () => {
     logger.debug(
-      `[${processState.role.toUpperCase()} ${processState.shardId}] Received SIGTERM directly, waiting for main shutdown message`
+      "Received SIGTERM directly, waiting for main process coordination",
+      `${processState.role.toUpperCase()} ${processState.shardId}`
     );
     // DO NOT call shutdown here - parent process will coordinate
+    // Set a safety timeout in case the parent process is unresponsive
+    const safetyTimeout = setTimeout(() => {
+      logger.warn(
+        "No shutdown signal from parent process after 10s, proceeding with self-shutdown",
+        `${processState.role.toUpperCase()} ${processState.shardId}`
+      );
+      exitProcess(0, "Parent process unresponsive during shutdown");
+    }, 10000); // 10s safety timeout
+
+    // Clear timeout if we receive the expected shutdown message
+    const messageHandler = (message: unknown) => {
+      if (message === "shutdown") {
+        clearTimeout(safetyTimeout);
+        process.off("message", messageHandler); // Remove handler once we get the message
+      }
+    };
+    process.on("message", messageHandler);
   });
 
-  // Register a message handler for shutdown commands
-  process.on("message", (message) => {
-    if (message === "shutdown") {
-      logger.info(
-        `[${processState.role.toUpperCase()} ${processState.shardId}] Received shutdown command, shutting down`
-      );
+  process.on("exit", (code) => {
+    trackInitState(`Process ${process.pid} exit with code ${code}`);
+    safeLog(
+      "debug",
+      `Process exit with code ${code}`,
+      `${processState.role.toUpperCase()} ${processState.shardId}`
+    );
 
-      if (shutdownManager) {
-        shutdownManager.shutdown(0, "Received shutdown command from main process");
-      } else {
-        exitProcess(0, "Received shutdown command from main process");
-      }
+    // Ensure we clean up the process lock
+    if (processState.shardId !== undefined) {
+      removeProcessLock(ProcessType.SHARD, processState.shardId);
     }
   });
 }
@@ -396,27 +688,33 @@ async function initializeShardProcess(): Promise<void> {
 /**
  * Handle Discord command setup and registration
  */
+let commandsLoaded = false;
+
 async function setupCommands(): Promise<void> {
-  logger.debug(`[${processState.role.toUpperCase()}] Loading commands...`);
+  if (commandsLoaded) {
+    logger.debug(`Commands already loaded, skipping redundant operations.`, "COMMANDS");
+    return;
+  }
+
+  logger.debug(`Loading commands...`, "COMMANDS");
   await loadCommands();
-  logger.debug(`[${processState.role.toUpperCase()}] Commands loaded.`);
+  logger.debug(`Commands loaded.`, "COMMANDS");
 
   // Command registration and processing
-  logger.debug(`[${processState.role.toUpperCase()}] Checking command registry parameters.`);
+  logger.debug(`Checking command registry parameters.`, "COMMANDS");
   const shouldRegisterCommands = await checkCommandChange();
 
   if (shouldRegisterCommands) {
-    logger.debug("Registering commands...");
-    await registerCommands(!process.argv.includes("-local"), configData);
+    logger.debug("Registering commands...", "COMMANDS");
+    await registerCommands(!process.argv.includes("-local"), _configData);
     await genCommandHash(true);
-    logger.debug("Command registration completed.");
+    logger.debug("Command registration completed.", "COMMANDS");
   } else {
-    logger.debug(
-      `[${processState.role.toUpperCase()}] No command changes detected. Skipping registration.`
-    );
+    logger.debug(`No command changes detected. Skipping registration.`, "COMMANDS");
   }
 
   await handleSpecialCommandLineArgs();
+  commandsLoaded = true;
 }
 
 /**
@@ -426,7 +724,7 @@ async function handleSpecialCommandLineArgs(): Promise<void> {
   if (process.argv.includes("-clear_commands")) {
     const local = process.argv.includes("-local");
     try {
-      await clearCommands(local, configData);
+      await clearCommands(local, _configData);
       logger.done(`Removed all ${local ? "local" : "global"} commands.`);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
@@ -435,8 +733,7 @@ async function handleSpecialCommandLineArgs(): Promise<void> {
   }
 
   if (process.argv.includes("-reg_commands")) {
-    await registerCommands(!process.argv.includes("-local"), configData);
-    logger.done("Commands registered successfully.");
+    await registerCommands(!process.argv.includes("-local"), _configData);
   }
 }
 
@@ -461,100 +758,255 @@ function setupMainProcessErrorHandlers(): void {
 }
 
 /**
- * Handle shard message processing
+ * Handle shard message processing with a clean, straightforward approach
  */
 function handleShardMessage(shard: Shard, message: unknown): void {
   try {
-    if (
-      Array.isArray(message) &&
-      message.length > 0 &&
-      typeof message[0] === "object" &&
-      "id" in message[0]
-    ) {
-      const messageCollection = new Collection(message.map((item) => [item.id as string, item]));
+    // Handle arrays of messages
+    if (Array.isArray(message)) {
+      const messageCollection = new Collection(
+        message.map((item) => {
+          if (typeof item === "object" && item !== null && "id" in item) {
+            return [String(item.id), item];
+          }
+          return ["unknown", item];
+        })
+      );
 
-      const threadMessages = messageCollection.filter((msg) => msg.type === "thread");
+      const threadMessages = messageCollection.filter(
+        (msg) => typeof msg === "object" && msg !== null && "type" in msg && msg.type === "thread"
+      );
+
       if (threadMessages.size > 0) {
-        logger.debug(
+        logger.trace(
           `Received ${threadMessages.size} thread-related messages from shard ${shard.id}`
         );
       }
-    } else if (message && typeof message === "object") {
-      const messageObj = message as Record<string, unknown>;
 
-      // Check for Discord.js internal ready message
-      if ("_ready" in messageObj && messageObj._ready === true) {
-        const shardId = messageObj.id !== undefined ? messageObj.id : shard.id;
-        logger.info(`Discord.js marked shard ${shardId} as ready`);
+      return;
+    }
+
+    // Handle string messages
+    if (typeof message === "string") {
+      logger.trace(`Shard ${shard.id} received message: ${message}`);
+      return;
+    }
+
+    // Handle object messages
+    if (message && typeof message === "object") {
+      const msgObj = message as Record<string, unknown>;
+      const messageType = typeof msgObj.type === "string" ? msgObj.type : null;
+
+      // First handle special cases based on message properties
+      if (msgObj._ready === true) {
+        const shardId = typeof msgObj.id === "number" ? msgObj.id : shard.id;
+        logger.done("Marked as ready by Discord.js", `SHARD ${shardId}`);
+        return;
       }
-      // Special handling for our custom SHARD_READY message
-      else if (messageObj.type === "SHARD_READY") {
-        const shardId = messageObj.id !== undefined ? messageObj.id : shard.id;
-        logger.info(`Received SHARD_READY confirmation from shard ${shardId}`);
-      } else if (messageObj.op === "KILL_SHARD") {
-        try {
-          shard.kill();
-          logger.done(`Successfully killed shard ${shard.id}.`);
-        } catch (err) {
-          logger.error(`Error killing shard ${shard.id}: ${String(err)}`);
+
+      // Handle messages with type property
+      if (messageType) {
+        // Handle acknowledgment messages
+        if (messageType.endsWith("_ACK") || messageType === "SHARD_READY") {
+          const shardId = typeof msgObj.shardId === "number" ? msgObj.shardId : shard.id;
+
+          // Log a proper message based on type
+          if (messageType === "SHARD_INIT_ACK") {
+            logger.debug(`Shard ${shardId} acknowledged initialization`, "SHARD_MANAGER");
+          } else if (messageType === "SHARD_READY_ACK") {
+            logger.debug(`Shard ${shardId} ready state acknowledged`, "SHARD_MANAGER");
+          } else if (messageType === "SHUTDOWN_ACK") {
+            logger.debug(`Shard ${shardId} acknowledged shutdown request`, "SHUTDOWN");
+          } else if (messageType === "SHARD_READY") {
+            logger.debug(`Shard ${shardId} reported ready status`, "SHARD_MANAGER");
+
+            // Additional handling for SHARD_READY
+            try {
+              shard
+                .send({
+                  type: "SHARD_READY_ACK",
+                  shardId: shardId,
+                  timestamp: Date.now(),
+                })
+                .catch((err) =>
+                  logger.debug(`Failed to acknowledge shard ${shardId} ready: ${err}`, "MAIN")
+                );
+
+              // Register with rate limit manager
+              logger.debug(`Registering shard ${shardId} with rate limit manager`, "MAIN");
+
+              import("./utilities/rateLimitManager")
+                .then(() => {
+                  logger.trace(`Shard ${shardId} registered with rate limit manager`, "MAIN");
+                })
+                .catch((err) => {
+                  logger.error(`Error registering shard with rate limit manager: ${err}`, "MAIN");
+                });
+            } catch (err) {
+              logger.debug(`Error acknowledging shard ${shardId} ready: ${err}`, "MAIN");
+            }
+          }
+
+          return;
         }
-      } else if (messageObj.op === "RELOAD_COMMANDS") {
-        handleReloadCommands();
+
+        // Handle rate limit related messages
+        if (messageType.includes("RATE_LIMIT")) {
+          // Handle rate limit update - properly leverage the discord.js RateLimitData object
+          if (messageType === "RATE_LIMIT_UPDATE") {
+            const route = typeof msgObj.route === "string" ? msgObj.route : "";
+            logger.trace(`Shard ${shard.id} reported rate limit for ${route}`, "RATE_LIMIT");
+
+            // First check if the full RateLimitData object is available
+            if (typeof msgObj.rateLimitData === "object" && msgObj.rateLimitData !== null) {
+              // Use the full RateLimitData object directly as provided by discord.js
+              rateLimitManager.handleRateLimit(msgObj.rateLimitData as RateLimitData);
+              return;
+            }
+
+            // Fallback to using individual fields if they're provided
+            if (typeof msgObj.route === "string") {
+              const rateLimitData: Partial<RateLimitData> = {
+                route: msgObj.route,
+                // Map fields from our message to discord.js RateLimitData properties
+                timeToReset:
+                  typeof msgObj.timeToReset === "number"
+                    ? msgObj.timeToReset
+                    : typeof msgObj.reset === "number"
+                      ? msgObj.reset
+                      : 5000,
+                limit: typeof msgObj.limit === "number" ? msgObj.limit : 0,
+                method: typeof msgObj.method === "string" ? msgObj.method : "GET",
+                url: typeof msgObj.url === "string" ? msgObj.url : "",
+                global: typeof msgObj.global === "boolean" ? msgObj.global : false,
+                hash: typeof msgObj.hash === "string" ? msgObj.hash : "",
+                majorParameter:
+                  typeof msgObj.majorParameter === "string" ? msgObj.majorParameter : "",
+              };
+
+              // Pass the best approximation of RateLimitData to the rate limit manager
+              rateLimitManager.handleRateLimit(rateLimitData as RateLimitData);
+              return;
+            }
+          }
+
+          // Handle global rate limit
+          if (messageType === "GLOBAL_RATE_LIMIT" && typeof msgObj.reset === "number") {
+            const reset = msgObj.reset;
+
+            logger.warn(
+              `Shard ${shard.id} reported global rate limit with reset at ${new Date(reset).toISOString()}`,
+              "RATE_LIMIT"
+            );
+
+            // For global rate limits, notify all shards
+            _shardManager
+              ?.broadcast({
+                type: "GLOBAL_RATE_LIMIT_NOTIFICATION",
+                reset,
+                source: shard.id,
+              })
+              .catch((err) => {
+                logger.error(`Failed to broadcast global rate limit: ${err}`, "RATE_LIMIT");
+              });
+
+            return;
+          }
+
+          // Handle rate limit request with headers
+          if (
+            messageType === "RATE_LIMIT_REQUEST" &&
+            typeof msgObj.route === "string" &&
+            typeof msgObj.requestId === "string" &&
+            typeof msgObj.headers === "object" &&
+            msgObj.headers !== null
+          ) {
+            const route = msgObj.route as string;
+            const requestId = msgObj.requestId as string;
+            const headers = msgObj.headers as Record<string, string>;
+
+            // Use the proper public method to update from headers
+            rateLimitManager.updateFromHeaders(route, headers);
+
+            // Send response back to shard about current rate limit status
+            try {
+              const isLimited = rateLimitManager.isRateLimited(route);
+              const resetTime = rateLimitManager.getRateLimitedUntil(route);
+
+              shard
+                .send({
+                  type: "RATE_LIMIT_RESPONSE",
+                  requestId,
+                  route,
+                  limited: isLimited,
+                  reset: resetTime,
+                  timestamp: Date.now(),
+                })
+                .catch((err) => {
+                  logger.error(
+                    `Failed to respond to rate limit request from shard ${shard.id}: ${err}`,
+                    "RATE_LIMIT"
+                  );
+                });
+            } catch (err) {
+              logger.error(
+                `Error sending rate limit response to shard ${shard.id}: ${err}`,
+                "RATE_LIMIT"
+              );
+            }
+
+            return;
+          }
+        }
       }
 
+      // Handle operation-based messages
+      const operation = typeof msgObj.op === "string" ? msgObj.op : null;
+      if (operation) {
+        if (operation === "KILL_SHARD") {
+          try {
+            shard.kill();
+            logger.done(`Successfully killed shard ${shard.id}.`);
+          } catch (err) {
+            logger.error(`Error killing shard ${shard.id}: ${String(err)}`);
+          }
+          return;
+        }
+
+        if (operation === "RELOAD_COMMANDS") {
+          reloadCommands();
+          return;
+        }
+      }
+
+      // Log the message content for trace purposes
       try {
-        logger.debug(`Shard ${shard.id} received message: ${JSON.stringify(message)}`);
+        logger.trace(`Shard ${shard.id} received message: ${JSON.stringify(msgObj)}`);
       } catch {
-        logger.debug(
-          `Shard ${shard.id} received message that couldn't be stringified: ${typeof message}`
+        logger.trace(
+          `Shard ${shard.id} received message that couldn't be stringified: ${typeof msgObj}`
         );
       }
-    } else if (typeof message === "string") {
-      logger.debug(`Shard ${shard.id} received message: ${message}`);
-    } else {
-      logger.debug(`Shard ${shard.id} received message of type: ${typeof message}`);
-    }
-  } catch (error) {
-    logger.error(`Error handling message from shard ${shard.id}: ${String(error)}`);
-  }
-}
 
-/**
- * Handle the RELOAD_COMMANDS operation
- */
-function handleReloadCommands(): void {
-  reloadCommands()
-    .then(() => {
-      logger.done("Commands reloaded successfully on main process.");
-      // Broadcast the reload command to all shards
-      if (manager) {
-        manager
-          .broadcastEval(async (client) => {
-            const { default: reloadCommands } = await import("./utilities/routines/reloadCommands");
-            await reloadCommands();
-            return `Shard ${client.shard?.ids[0]} reloaded commands.`;
-          })
-          .then((results) => {
-            logger.done(`Commands reloaded on all shards: ${results.join("\n")}`);
-          })
-          .catch((err) => {
-            const errorMessage = err instanceof Error ? err.message : String(err);
-            logger.error(`Failed to reload commands on all shards: ${errorMessage}`);
-          });
-      }
-    })
-    .catch((err) => {
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      logger.error(`Failed to reload commands on main process: ${errorMessage}`);
-    });
+      return;
+    }
+
+    // Handle other message types
+    logger.trace(`Shard ${shard.id} received message of type: ${typeof message}`);
+  } catch (error) {
+    logger.error(`Error handling message from shard ${shard.id}: ${String(error)}`, "MAIN");
+  }
 }
 
 /**
  * Configure a shard with event handlers
  */
 function setupShardEventHandlers(shard: Shard): void {
-  shards.push(shard);
+  _shards.push(shard);
   logger.done(`Shard ${shard.id} spawned!`);
+
+  // Track shard initialization timeouts for proper cleanup
+  const shardTimeouts = new Map<string, NodeJS.Timeout>();
 
   if (shard.process?.send) {
     try {
@@ -578,7 +1030,7 @@ function setupShardEventHandlers(shard: Shard): void {
   });
 
   shard.on("reconnecting", () => {
-    if (!shuttingDown) {
+    if (!_shuttingDown) {
       logger.debug(`Shard ${shard.id} is reconnecting.`);
       webLog(`Shard ${shard.id} is reconnecting!`, null, Colors.DarkGreen).catch(() => {
         // Silent fail for webhook during reconnection is appropriate
@@ -587,11 +1039,11 @@ function setupShardEventHandlers(shard: Shard): void {
   });
 
   shard.on("resume", () => {
-    if (!shuttingDown) logger.debug(`Shard ${shard.id} resumed.`);
+    if (!_shuttingDown) logger.debug(`Shard ${shard.id} resumed.`);
   });
 
   shard.on("death", () => {
-    if (!shuttingDown) {
+    if (!_shuttingDown) {
       logger.error(`Shard ${shard.id} died.`);
       webLog(`Shard ${shard.id} died!`, null, Colors.Red).catch(() => {
         // Silent fail for webhook during death is appropriate
@@ -602,7 +1054,7 @@ function setupShardEventHandlers(shard: Shard): void {
   });
 
   shard.on("disconnect", () => {
-    if (!shuttingDown) {
+    if (!_shuttingDown) {
       logger.debug(`Shard ${shard.id} disconnected`);
       webLog(`Shard ${shard.id} disconnected`, "Connection closed", Colors.Orange).catch(() => {
         // Silent fail for webhook during disconnect is appropriate
@@ -610,167 +1062,213 @@ function setupShardEventHandlers(shard: Shard): void {
     }
   });
 
-  shard.on("message", (message) => handleShardMessage(shard, message));
+  shard.on("message", (message) => {
+    // Process the message in handleShardMessage which knows how to handle all types
+    handleShardMessage(shard, message);
+  });
+
+  // Cleanup function for when shards are destroyed
+  shard.on("death", () => {
+    // Clear all timeouts for this shard
+    for (const [key, timeoutId] of shardTimeouts.entries()) {
+      if (key.includes(`-${shard.id}`)) {
+        clearTimeout(timeoutId);
+        shardTimeouts.delete(key);
+        logger.trace(`Cleared timeout ${key} for dead shard ${shard.id}`, "MAIN");
+      }
+    }
+  });
 }
 
 /**
  * Create and configure the sharding manager
  */
 function setupShardingManager(args: string[]): ShardingManager {
-  logger.debug(`[${processState.role.toUpperCase()}] Creating ShardingManager.`);
+  logger.debug(`Creating ShardingManager.`, `${processState.role.toUpperCase()}`);
 
-  // Get shard count from config or use "auto" as fallback
-  const shardCount = configData.shardCount !== undefined ? configData.shardCount : 1;
+  const shardCount = getShardCount();
+  const newManager = createShardingManager(args, shardCount);
 
-  logger.debug(`Configuring ShardingManager with totalShards: ${shardCount}`);
-
-  const newManager = new ShardingManager("./dist/index.js", {
-    token: configData.tokens.discord,
-    shardArgs: [...args, "--is-shard"],
-    execArgv: process.execArgv,
-    totalShards: shardCount,
-    respawn: true,
-    mode: "process",
-    silent: false,
-  });
-
-  logger.debug(`[${processState.role.toUpperCase()}] ShardingManager created.`);
-
-  // Set up shard creation handler
+  logger.debug(`ShardingManager created.`, `${processState.role.toUpperCase()}`);
   newManager.on("shardCreate", (shard) => setupShardEventHandlers(shard));
+
+  _shardManager = newManager;
+
+  // Register only once using the critical flag
+  if (serviceRegistry && typeof serviceRegistry.register === "function") {
+    try {
+      serviceRegistry.register("shardManager", newManager);
+      logger.debug(
+        "Service 'shardManager' registered successfully",
+        `${processState.role.toUpperCase()}`
+      );
+    } catch (error) {
+      logger.warn(
+        `Failed to register 'shardManager' service: ${error instanceof Error ? error.message : String(error)}`,
+        `${processState.role.toUpperCase()}`
+      );
+    }
+  }
 
   return newManager;
 }
 
 /**
- * Spawn shards with error handling and state tracking
+ * Get shard count from config or use "auto" as fallback
  */
-let shardSpawningInProgress = false;
-let spawnTimeoutId: NodeJS.Timeout | null = null;
+function getShardCount(): number | "auto" {
+  return _configData.shardCount !== undefined ? _configData.shardCount : 1;
+}
 
+/**
+ * Create a new ShardingManager instance
+ */
+function createShardingManager(args: string[], shardCount: number | "auto"): ShardingManager {
+  logger.debug(
+    `Configuring ShardingManager with totalShards: ${shardCount}`,
+    `${processState.role.toUpperCase()}`
+  );
+
+  return new ShardingManager("./dist/index.js", {
+    totalShards: shardCount,
+    shardArgs: args,
+    token: _configData.tokens.discord,
+    respawn: true,
+  });
+}
+
+/**
+ * Spawn shards with proper error handling and timeouts
+ */
 async function spawnShards(manager: ShardingManager): Promise<void> {
-  if (shardSpawningInProgress) {
-    logger.warn("Shard spawning already in progress, skipping duplicate request");
+  if (_shardSpawningInProgress) {
+    logger.warn(
+      "Shard spawning already in progress, skipping duplicate request",
+      `${processState.role.toUpperCase()}`
+    );
     return;
   }
 
-  shardSpawningInProgress = true;
+  _shardSpawningInProgress = true;
 
   try {
-    // If shards are already active, consider this a success and return early
     if (manager.shards.size > 0) {
-      logger.info(`${manager.shards.size} shards already active, skipping spawn`);
-      shardSpawningInProgress = false;
+      logger.info(
+        `${manager.shards.size} shards already active, skipping spawn`,
+        `${processState.role.toUpperCase()}`
+      );
+      _shardSpawningInProgress = false;
       return;
     }
 
-    try {
-      const spawnTimeout = 180000;
-      logger.debug(`Starting shard spawn process with timeout of ${spawnTimeout / 1000} seconds`);
-
-      // Set our own timeout as a safety measure
-      if (spawnTimeoutId) clearTimeout(spawnTimeoutId);
-
-      // Create a safety timeout that won't crash the process if exceeded
-      spawnTimeoutId = setTimeout(() => {
-        logger.warn(
-          `Shard spawn safety timeout (${spawnTimeout / 1000}s) triggered, but continuing anyway`
-        );
-
-        // Check if any shards are active and proceed if possible
-        if (manager.shards.size > 0) {
-          logger.info(`Found ${manager.shards.size} active shards despite timeout`);
-
-          // Try to verify responsiveness
-          manager
-            .broadcastEval(() => "ready")
-            .then((results) => {
-              logger.info(`Verified ${results.length} responsive shards despite timeout`);
-            })
-            .catch((err) => {
-              logger.warn(`Failed to verify shard responsiveness: ${err}`);
-            });
-        }
-      }, spawnTimeout + 10000); // Add 10s buffer to our safety timeout
-
-      const spawnOptions = {
-        timeout: spawnTimeout,
-        ...(manager.shardList.length > 0 ? { shardList: manager.shardList } : {}),
-      };
-
-      // Get actual shard count to be spawned
-      const shardCountToSpawn =
-        Array.isArray(manager.shardList) && manager.shardList.length > 0
-          ? manager.shardList.length
-          : typeof manager.totalShards === "number"
-            ? manager.totalShards
-            : "auto";
-
-      logger.debug(`Spawning ${shardCountToSpawn} shard(s)...`);
-
-      await manager.spawn(spawnOptions);
-
-      // Clear our safety timeout if spawn succeeds
-      if (spawnTimeoutId) {
-        clearTimeout(spawnTimeoutId);
-        spawnTimeoutId = null;
-      }
-
-      logger.debug(`Successfully spawned ${manager.shards.size} shards`);
-    } catch (spawnError) {
-      // Clear our safety timeout if spawn fails
-      if (spawnTimeoutId) {
-        clearTimeout(spawnTimeoutId);
-        spawnTimeoutId = null;
-      }
-
-      const errorMessage = spawnError instanceof Error ? spawnError.message : String(spawnError);
-
-      if (errorMessage.includes("took too long to become ready") && manager.shards.size > 0) {
-        logger.warn(
-          `Shard readiness timeout, but ${manager.shards.size} shard(s) are active. Proceeding normally.`
-        );
-
-        // Verify shard responsiveness despite timeout
-        try {
-          const pingResult = await manager.broadcastEval(() => "ready");
-          logger.info(`Verified ${pingResult.length} responsive shards despite timeout`);
-
-          // This is considered a success, so just return instead of throwing
-          shardSpawningInProgress = false;
-          return;
-        } catch (evalError) {
-          logger.warn(`Shard responsiveness check after timeout: ${evalError}`);
-          // Continue to error handling if eval fails
-        }
-      }
-
-      if (errorMessage.includes("Already spawned") && manager.shards.size > 0) {
-        logger.info(`Using ${manager.shards.size} existing shards (${errorMessage})`);
-        shardSpawningInProgress = false;
-        return;
-      }
-
-      // Re-throw for all other errors
-      throw spawnError;
-    }
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    logger.error(`Failed to spawn shards: ${errorMessage}`);
-
-    // Only throw if we couldn't actually spawn any shards
-    if (manager.shards.size === 0) {
-      throw error;
-    } else {
-      logger.warn(`Proceeding with ${manager.shards.size} active shards despite spawn errors`);
-    }
+    await performShardSpawn(manager);
   } finally {
-    // Always clear the safety timeout and reset the flag
-    if (spawnTimeoutId) {
-      clearTimeout(spawnTimeoutId);
-      spawnTimeoutId = null;
+    if (_spawnTimeoutId) {
+      clearTimeout(_spawnTimeoutId);
+      _spawnTimeoutId = null;
+      logger.debug(`Cleared shard spawn safety timeout`, `${processState.role.toUpperCase()}`);
     }
-    shardSpawningInProgress = false;
+    _shardSpawningInProgress = false;
+  }
+}
+
+async function performShardSpawn(manager: ShardingManager): Promise<void> {
+  const spawnTimeout = 180000;
+  logger.debug(
+    `Starting shard spawn process with timeout of ${spawnTimeout / 1000} seconds`,
+    `${processState.role.toUpperCase()}`
+  );
+
+  if (_spawnTimeoutId) clearTimeout(_spawnTimeoutId);
+
+  _spawnTimeoutId = setTimeout(
+    () => handleSpawnTimeout(manager, spawnTimeout),
+    spawnTimeout + 10000
+  );
+
+  const spawnOptions = {
+    timeout: spawnTimeout,
+    ...(manager.shardList.length > 0 ? { shardList: manager.shardList } : {}),
+  };
+
+  const shardCountToSpawn = getShardCountToSpawn(manager);
+
+  logger.debug(`Spawning ${shardCountToSpawn} shard(s)...`, `${processState.role.toUpperCase()}`);
+
+  try {
+    await manager.spawn(spawnOptions);
+    clearSpawnTimeout();
+    logger.debug(
+      `Successfully spawned ${manager.shards.size} shards`,
+      `${processState.role.toUpperCase()}`
+    );
+  } catch (spawnError) {
+    handleSpawnError(manager, spawnError);
+  }
+}
+
+function getShardCountToSpawn(manager: ShardingManager): number | "auto" {
+  return Array.isArray(manager.shardList) && manager.shardList.length > 0
+    ? manager.shardList.length
+    : typeof manager.totalShards === "number"
+      ? manager.totalShards
+      : "auto";
+}
+
+function handleSpawnTimeout(manager: ShardingManager, spawnTimeout: number): void {
+  logger.warn(
+    `Shard spawn safety timeout (${spawnTimeout / 1000}s) triggered, but continuing anyway`,
+    `${processState.role.toUpperCase()}`
+  );
+
+  if (manager.shards.size > 0) {
+    logger.info(
+      `Found ${manager.shards.size} active shards despite timeout`,
+      `${processState.role.toUpperCase()}`
+    );
+    verifyShardResponsiveness(manager);
+  }
+}
+
+function clearSpawnTimeout(): void {
+  if (_spawnTimeoutId) {
+    clearTimeout(_spawnTimeoutId);
+    _spawnTimeoutId = null;
+  }
+}
+
+async function verifyShardResponsiveness(manager: ShardingManager): Promise<void> {
+  try {
+    const results = await manager.broadcastEval(() => "ready");
+    logger.info(`Verified ${results.length} responsive shards despite timeout`, "SHARD_SPAWN");
+  } catch (err) {
+    logger.warn(`Failed to verify shard responsiveness: ${err}`, "SHARD_SPAWN");
+  }
+}
+
+async function handleSpawnError(manager: ShardingManager, spawnError: unknown): Promise<void> {
+  clearSpawnTimeout();
+
+  const errorMessage = spawnError instanceof Error ? spawnError.message : String(spawnError);
+
+  if (errorMessage.includes("took too long to become ready") && manager.shards.size > 0) {
+    logger.warn(
+      `Shard readiness timeout, but ${manager.shards.size} shard(s) are active. Proceeding normally.`,
+      `${processState.role.toUpperCase()}`
+    );
+    await verifyShardResponsiveness(manager);
+    return;
+  }
+
+  logger.error(`Failed to spawn shards: ${errorMessage}`, `${processState.role.toUpperCase()}`);
+
+  if (manager.shards.size === 0) {
+    throw spawnError;
+  } else {
+    logger.warn(
+      `Proceeding with ${manager.shards.size} active shards despite spawn errors`,
+      `${processState.role.toUpperCase()}`
+    );
   }
 }
 
@@ -780,15 +1278,15 @@ async function spawnShards(manager: ShardingManager): Promise<void> {
 async function initializeAuxiliaryServices(): Promise<void> {
   const tasks: Promise<void>[] = [];
 
-  if (configData.tokens.topgg) {
+  if (_configData.tokens.topgg) {
     tasks.push(initializeTopGG());
   }
 
-  if (configData.database.backupInterval) {
+  if (_configData.database.backupInterval) {
     tasks.push(initializeBackups());
   }
 
-  if (configData.statsServer.enabled) {
+  if (_configData.statsServer.enabled) {
     tasks.push(initializeStatsServer());
   }
 
@@ -803,7 +1301,11 @@ function initializeTopGG(): Promise<void> {
     "Failed to initialize Top.gg autoposter",
     () => {
       logger.info("Using top.gg autoposter");
-      AutoPoster(configData.tokens.topgg, manager);
+      const manager = getShardManager();
+      if (!manager) {
+        throw new Error("Shard manager not available for top.gg autoposter");
+      }
+      AutoPoster(_configData.tokens.topgg, manager);
       logger.debug("Top.gg autoposter initialized successfully");
 
       return Promise.resolve();
@@ -824,6 +1326,11 @@ function initializeBackups(): Promise<void> {
   return handleApiError(
     "Failed to schedule database backups",
     () => {
+      if (!serviceRegistry.isAvailable("database")) {
+        throw new Error("Database service not available for backups");
+      }
+
+      const db = serviceRegistry.get("database") as Database;
       scheduleBackups(db, logger);
       logger.debug("Database backups scheduled successfully");
 
@@ -845,8 +1352,18 @@ function initializeStatsServer(): Promise<void> {
   return handleApiError(
     "Failed to start stats server",
     () => {
-      start(manager, configData.statsServer.port, db);
-      logger.info(`Stats server started on port ${configData.statsServer.port}`);
+      const manager = getShardManager();
+      if (!manager) {
+        throw new Error("Shard manager not available for stats server");
+      }
+
+      if (!serviceRegistry.isAvailable("database")) {
+        throw new Error("Database service not available for stats server");
+      }
+
+      const db = serviceRegistry.get("database") as Database;
+      start(manager, _configData.statsServer.port, db);
+      logger.info(`Stats server started on port ${_configData.statsServer.port}`);
 
       return Promise.resolve();
     },
@@ -863,110 +1380,331 @@ function initializeStatsServer(): Promise<void> {
  * Initialize the main process with shard handling
  */
 async function initializeMainProcess(): Promise<void> {
-  logger.debug(
-    `[${processState.role.toUpperCase()}] Initialization started via process ${process.pid}`
-  );
+  logger.debug(`Initialization started via process ${process.pid}`, "INIT");
 
-  // Command handling for main process
   const args = process.argv.slice(2).filter((arg) => arg !== "--is-shard");
-  await setupCommands();
 
+  // Create and register shardManager BEFORE loading commands
+  const manager = setupShardingManager(args);
+
+  // Wait a moment to ensure the service registration completes
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  // Now load commands after shardManager is registered
+  await setupCommands();
   setupMainProcessErrorHandlers();
 
-  manager = setupShardingManager(args);
+  await spawnShards(manager);
 
-  try {
-    await spawnShards(manager);
+  // Initialize auxiliary services (top.gg, backups, stats server)
+  await initializeAuxiliaryServices();
 
-    if (manager.shards.size > 0) {
-      await initializeAuxiliaryServices();
-      logger.done(`Thread-Watcher initialized with ${manager.shards.size} active shards`);
-    } else {
-      logger.error("No shards were spawned successfully, cannot proceed with initialization");
-      throw new Error("No shards spawned");
-    }
-  } catch (error) {
-    logger.error(`Failed to initialize sharding: ${error}`);
-    throw error;
-  }
+  await registerShutdownTask();
 }
 
 /**
  * Initialize function handling both shard and main processes
  */
 export const initialize = async (): Promise<void> => {
+  if (_isStartupInProgress) {
+    logger.warn("Initialization already in progress, ignoring duplicate call");
+    return;
+  }
+
+  logger.trace(
+    `Process ${process.pid} initializing (${isShard() ? "shard" : "main"})`,
+    `${processState.role.toUpperCase()}`
+  );
+  _isStartupInProgress = true;
+
   try {
     if (!setupEnvironment()) {
+      _isStartupInProgress = false;
       return;
     }
 
+    logger.trace(
+      "Environment setup complete, initializing core services",
+      `${processState.role.toUpperCase()}`
+    );
     await setupCoreServices();
+    logger.trace("Core services initialized", `${processState.role.toUpperCase()}`);
 
     if (isShard()) {
-      await initializeShardProcess();
+      await initializeShard();
     } else {
-      await initializeMainProcess();
-    }
-  } catch (err) {
-    const errorMessage = err instanceof Error ? err.message : String(err);
-    if (logger) {
-      logger.error(`Initialization error: ${errorMessage}`);
-      if (err instanceof Error && err.stack) {
-        logger.error(`Stack trace: ${err.stack}`);
-      }
-    } else {
-      console.error(`Initialization error: ${errorMessage}`);
+      await initializeMain();
     }
 
-    if (!isShardProcess) {
-      await handleMainShutdown("initialization failure");
-    } else {
-      exitProcess(1, "Shard initialization failed");
+    logger.trace(
+      `Process ${process.pid} initialization complete`,
+      `${processState.role.toUpperCase()}`
+    );
+    _applicationStartupComplete = true;
+    _isStartupInProgress = false;
+
+    if (!_messagesSuppressed) {
+      logger.info(
+        `${isShard() ? `Shard ${getShardId()}` : "Main process"} initialization complete`
+      );
+      _messagesSuppressed = true;
     }
+  } catch (err) {
+    handleInitializationError(err);
   }
 };
 
-// Entry point - only run initialize when this is the main module
-if (require.main === module && !hasInitialized) {
-  hasInitialized = true;
-  trackInitState("Entry point execution");
-  initialize().catch((err) => {
-    trackInitState(`Initialization error: ${err instanceof Error ? err.message : String(err)}`);
-    console.error(`Initialization error: ${err instanceof Error ? err.message : String(err)}`);
-    if (err instanceof Error && err.stack) console.error(err.stack);
+const initializeShard = async (): Promise<void> => {
+  logger.trace(`Initializing shard process ${getShardId()}`, `${processState.role.toUpperCase()}`);
+  await initializeShardProcess();
+};
 
-    exitProcess(1, `Initialization failed: ${err instanceof Error ? err.message : String(err)}`);
-  });
+const initializeMain = async (): Promise<void> => {
+  logger.trace("Initializing main process", `${processState.role.toUpperCase()}`);
+  await initializeMainProcess();
+};
 
-  // Set up process signal handlers - only register what's needed based on process role
-  if (!isShard()) {
-    // Main process already has signal handlers from shutdownManager
-    // Just add the exit handler for cleanup
-    process.on("exit", (code) => {
-      trackInitState(`Process ${process.pid} exit with code ${code}`);
-      safeLog(
-        "debug",
-        `[${processState.role.toUpperCase()}] Process exit with code ${code} - cleaning up`
+const handleInitializationError = (err: unknown): void => {
+  logger.error(`Initialization error: ${err instanceof Error ? err.message : String(err)}`);
+  if (err instanceof Error && err.stack) {
+    logger.debug(`Initialization stack trace: ${err.stack}`);
+  }
+
+  _isStartupInProgress = false;
+
+  const timeoutId = setTimeout(() => {
+    if (!_isShardProcess) {
+      handleMainShutdown("initialization failure").catch((e) =>
+        logger.error(`Error during shutdown after initialization failure: ${e}`)
       );
-      if (shuttingDown) {
-        destroyShards();
+    } else {
+      exitProcess(1, "Shard initialization failed");
+    }
+  }, 2000);
+
+  _initTimeouts.add(timeoutId);
+};
+
+// Set up entry point logic
+function setupEntryPoint(): void {
+  if (require.main === module && !_hasInitialized) {
+    _hasInitialized = true;
+    trackInitState("Entry point execution");
+
+    // Log startup at info level but only once
+    if (!_applicationStartupComplete && !_messagesSuppressed) {
+      logger.trace(
+        `Thread-Watcher starting (${isMainProcess() ? "main" : "shard"} process ${process.pid})`,
+        "STARTUP"
+      );
+      _messagesSuppressed = true;
+    }
+
+    // Add error handlers before doing anything else
+    process.on("unhandledRejection", (reason) => {
+      const reasonStr = reason instanceof Error ? reason.message : String(reason);
+      logger.error(`Unhandled Rejection: ${reasonStr}`);
+      if (reason instanceof Error && reason.stack) {
+        logger.error(`Stack trace: ${reason.stack}`);
       }
     });
-  } else {
-    // For shard processes, only log the signals but let parent manage shutdown
-    // No need for duplicate handlers here, as initializeShardProcess already sets them up
-    process.on("exit", (code) => {
-      trackInitState(`Process ${process.pid} exit with code ${code}`);
-      safeLog(
-        "debug",
-        `[${processState.role.toUpperCase()} ${processState.shardId}] Process exit with code ${code}`
-      );
+
+    process.on("uncaughtException", (err) => {
+      logger.error("[FATAL ERROR] encountered in the main process.");
+      logger.error(err instanceof Error ? err.message : String(err));
+      if (err.stack) logger.error(err.stack);
+
+      // Don't call handleMainShutdown here to avoid potential loops
+      // Just exit the process after a delay
+      setTimeout(() => {
+        process.exit(1);
+      }, 1000);
     });
+
+    // Wrap the initialize call in a try/catch for extra safety
+    try {
+      logger.trace("Starting initialization process", "STARTUP");
+
+      initialize().catch((err) => {
+        logger.error(
+          `Critical initialization error: ${err instanceof Error ? err.message : String(err)}`
+        );
+
+        if (err instanceof Error && err.stack) {
+          logger.debug(`Error stack trace: ${err.stack}`);
+        }
+
+        // Add a delay before exit to prevent rapid restart loops
+        const timeoutId = setTimeout(() => {
+          exitProcess(
+            1,
+            `Initialization failed: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }, 2000);
+
+        // Track timeout for potential cleanup
+        _initTimeouts.add(timeoutId);
+      });
+    } catch (err) {
+      logger.error(`Critical error during initialization setup: ${err}`);
+
+      // Add a delay before exit to prevent rapid restart loops
+      const timeoutId = setTimeout(() => {
+        process.exit(1);
+      }, 3000);
+
+      // Track timeout for potential cleanup
+      _initTimeouts.add(timeoutId);
+    }
+
+    // Set up process signal handlers - only register what's needed based on process role
+    if (!isShard()) {
+      // Main process already has signal handlers from shutdownManager
+      // Just add the exit handler for cleanup
+      process.on("exit", (code) => {
+        trackInitState(`Process ${process.pid} exit with code ${code}`);
+        safeLog("debug", `Process exit with code ${code} - cleaning up`, "EXIT");
+        if (_shuttingDown) {
+          destroyShards();
+        }
+      });
+    } else {
+      // For shard processes, only log the signals but let parent manage shutdown
+      // No need for duplicate handlers here, as initializeShardProcess already sets them up
+      process.on("exit", (code) => {
+        trackInitState(`Process ${process.pid} exit with code ${code}`);
+        safeLog(
+          "debug",
+          `Process exit with code ${code}`,
+          `${processState.role.toUpperCase()} ${processState.shardId}`
+        );
+      });
+    }
+  }
+
+  // Ensure we handle signals properly
+  process.on("SIGINT", () => {
+    logger.info("Received SIGINT signal");
+    exitProcess(0, "SIGINT");
+  });
+
+  process.on("SIGTERM", () => {
+    logger.info("Received SIGTERM signal");
+    exitProcess(0, "SIGTERM");
+  });
+
+  // Add handler for cleanup at exit
+  process.on("exit", (code) => {
+    logger.debug(`Process exit with code ${code} - cleaning up`, "MAIN");
+
+    // Make sure we don't leave any dangling child processes
+    const manager = getShardManager();
+    if (manager) {
+      try {
+        logger.debug("Ensuring no orphaned shards remain");
+        manager.shards.forEach((shard) => {
+          try {
+            process.kill(shard.process?.pid || 0, "SIGTERM");
+          } catch {
+            // Ignore errors trying to terminate already exited processes
+          }
+        });
+      } catch {
+        // Ignore any cleanup errors during exit
+      }
+    }
+
+    // Ensure we remove process lock files
+    if (isMainProcess()) {
+      removeProcessLock(ProcessType.MAIN);
+    } else if (processState.shardId !== undefined) {
+      removeProcessLock(ProcessType.SHARD, processState.shardId);
+    }
+
+    // Clear all initialization timeouts
+    for (const timeoutId of _initTimeouts) {
+      clearTimeout(timeoutId);
+    }
+    _initTimeouts.clear();
+
+    // Clear all tracked shard timeouts
+    for (const timeoutId of _shardTimeoutMap.values()) {
+      clearTimeout(timeoutId);
+    }
+    _shardTimeoutMap.clear();
+  });
+}
+
+// Call the setupEntryPoint function
+setupEntryPoint();
+
+// Export necessary objects and functions
+export { _configData as config }
+
+/**
+ * Get the ShardManager instance
+ * @returns The ShardManager instance or undefined if not initialized
+ */
+export function getShardManager(): ShardingManager | undefined {
+  try {
+    // Try to use service registry first if available
+    if (
+      serviceRegistry &&
+      serviceRegistry.isAvailable &&
+      serviceRegistry.isAvailable("shardManager")
+    ) {
+      return serviceRegistry.get("shardManager");
+    }
+
+    // Fall back to module variable if service registry not available
+    if (_shardManager) {
+      return _shardManager;
+    }
+
+    // Log with appropriate severity based on initialization state
+    if (_isStartupInProgress) {
+      logger.debug("ShardManager requested during initialization - not available yet");
+    } else {
+      logger.warn("ShardManager requested but not available");
+    }
+
+    return undefined;
+  } catch (err) {
+    // Handle errors gracefully
+    logger.debug(
+      `Error accessing shardManager: ${err instanceof Error ? err.message : String(err)}`
+    );
+    return _shardManager || undefined;
   }
 }
 
-// Export necessary objects and functions
-export { configData as config, webLog }
+/**
+ * Register shutdown task for thread monitoring cleanup
+ */
+async function registerShutdownTask(): Promise<void> {
+  if (_localShutdownManager && !_taskRegistrationComplete) {
+    _localShutdownManager.registerCleanupTask(
+      async () => {
+        if (threadManager) {
+          await threadManager.stopThreadMonitoring();
+          logger.debug("Thread monitoring stopped during shutdown");
+        }
+      },
+      {
+        name: "Thread_Maintenance_Cleanup_Task",
+        priority: ShutdownPriority.NORMAL,
+        timeout: 3000,
+      }
+    );
 
-// Accessor for ShardManager
-export const getShardManager = (): ShardingManager | undefined => manager;
+    // Mark task as registered to prevent duplicate registration
+    _taskRegistrationComplete = true;
+  }
+}
+
+// Import necessary utilities
+
+// Setup proper signal handling for the current process type
+initializeShutdownHandlers(isShard());
+export { serviceRegistry } from "./services"
+

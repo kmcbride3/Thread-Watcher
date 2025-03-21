@@ -1,7 +1,7 @@
-import globals from "globals";
 import pluginJs from "@eslint/js";
-import tseslint from "typescript-eslint";
 import securityPlugin from "eslint-plugin-security";
+import globals from "globals";
+import tseslint from "typescript-eslint";
 
 export default [
   // Top-level ignores for all configurations
@@ -53,6 +53,7 @@ export default [
   {
     files: ["**/*.ts"],
     languageOptions: {
+      // skipcq: JS-P1003
       parser: tseslint.parser,
       parserOptions: {
         project: "./tsconfig.json",
@@ -63,6 +64,7 @@ export default [
       },
     },
     plugins: {
+      // skipcq: JS-P1003
       "@typescript-eslint": tseslint.plugin,
       security: securityPlugin,
     },
@@ -70,7 +72,9 @@ export default [
 
   // Apply recommended configs and styling
   pluginJs.configs.recommended,
+  // skipcq: JS-P1003
   ...tseslint.configs.recommended,
+  // skipcq: JS-P1003
   ...tseslint.configs.stylistic,
 
   // Combined rules for TypeScript files
@@ -78,10 +82,7 @@ export default [
     files: ["**/*.ts"],
     rules: {
       // Code quality rules
-      "no-unused-vars": "off",
       "@typescript-eslint/no-explicit-any": "warn",
-      "@typescript-eslint/explicit-function-return-type": "off",
-      "@typescript-eslint/explicit-module-boundary-types": "off",
       "@typescript-eslint/no-unused-vars": [
         "warn",
         {

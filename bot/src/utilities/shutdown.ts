@@ -1,6 +1,9 @@
 import { Client } from "discord.js";
 import { logger } from "../index";
-import { safeObjectAccess } from "./securityExceptions";
+import { ErrorSeverity, handleApiError } from "./errorSystem";
+import { safeLog } from "./logger";
+import { getShardId, isShard } from "./processState";
+import { ProcessType, removeProcessLock } from "./startup";
 
 /**
  * Priority levels for shutdown tasks
@@ -33,34 +36,41 @@ export enum AppState {
 }
 
 /**
- * Safely log a message during shutdown
- * Works even when regular logger isn't available
+ * Safely get priority name from enum value
+ * @param priority The priority enum value
+ * @returns The string name of the priority
  */
-const safeShutdownLog = (level: string, message: string): void => {
-  // Try to use the logger if it's available
-  if (
-    typeof logger !== "undefined" &&
-    logger &&
-    typeof logger[level as keyof typeof logger] === "function"
-  ) {
-    try {
-      const logFunction = logger[level as keyof typeof logger] as unknown as (msg: string) => void;
-      logFunction(message);
-      return;
-    } catch {
-      // Fall back to console if logger method fails
-    }
+function safeGetPriorityName(priority: ShutdownPriority): string {
+  // Use a switch statement instead of dynamic property access to avoid object injection
+  switch (priority) {
+    case ShutdownPriority.CRITICAL:
+      return "CRITICAL";
+    case ShutdownPriority.HIGH:
+      return "HIGH";
+    case ShutdownPriority.NORMAL:
+      return "NORMAL";
+    case ShutdownPriority.LOW:
+      return "LOW";
+    default:
+      return "UNKNOWN";
   }
+}
 
-  const timestamp = new Date().toISOString();
-  if (level === "error") {
-    console.error(`${timestamp} [ERROR] ${message}`);
-  } else if (level === "warn") {
-    console.warn(`${timestamp} [WARN] ${message}`);
-  } else {
-    console.log(`${timestamp} [${level.toUpperCase()}] ${message}`);
-  }
-};
+/**
+ * Module-level shutdown tracking variables to prevent restart loops
+ */
+let shutdownInProgress = false;
+let lastShutdownTime = 0;
+let handlerInitialized = false;
+let signalReceivedTime = 0;
+const SHUTDOWN_COOLDOWN = 5000; // Minimum time between shutdown requests (5 seconds)
+const MIN_EXIT_DELAY = 2000; // Minimum exit delay after a previous exit attempt
+
+// Static variables for exit process
+let clearedTimers = false;
+let exitTimeoutSet = false;
+let lastLoggedReason = "";
+let exitTimeoutId: NodeJS.Timeout | null = null; // Track the timeout ID
 
 /**
  * Fallback exit function when shutdownManager isn't available
@@ -76,194 +86,473 @@ export function exitProcess(
   delayMs = 200
 ): Promise<never> {
   try {
-    // Avoid redundant exit messages - only log if not already part of a clean shutdown sequence
-    if (!reason.includes("completed in") && !reason.includes("(completed")) {
-      safeShutdownLog("info", `Process ${process.pid} exiting with code ${exitCode}: ${reason}`);
+    // If we already have a pending exit timeout, don't start another one
+    if (exitTimeoutSet && exitTimeoutId) {
+      logger.debug(`Exit already in progress, ignoring duplicate exitProcess call`, "EXIT");
+      return new Promise((resolve) => {
+        // This promise never resolves since the existing timeout will exit the process
+        setTimeout(() => resolve(process.exit(exitCode)), 30000);
+      });
     }
 
-    setTimeout(() => {
-      try {
-        // skipcq: JS-0263
-        process.exit(exitCode);
-      } catch (e) {
-        // This should never happen, but just in case
-        console.error("Failed to exit process:", e);
-        // Force exit with original exit code
-        process.kill(process.pid, "SIGKILL");
-      }
-    }, delayMs);
+    // Immediately flag that shutdown is in progress to block duplicate calls
+    global.isShuttingDown = true;
 
+    // Block duplicate exit attempts happening too close together
+    const now = Date.now();
+    let finalDelayMs = delayMs;
+
+    // Use a specific debug tag based on process role
+    const processType = isShard() ? "SHARD" : "MAIN";
+    const shardId = process.env.SHARD_ID || "0";
+    const logContext = isShard()
+      ? `${processType.toUpperCase()} ${shardId}`
+      : processType.toUpperCase();
+
+    if (now - lastShutdownTime < SHUTDOWN_COOLDOWN) {
+      logger.warn(`Frequent exit calls detected (${now - lastShutdownTime}ms apart)`, logContext);
+      // Use a much longer delay to break potential loops
+      finalDelayMs = Math.max(delayMs, MIN_EXIT_DELAY);
+
+      // If we're in a very tight loop (under 100ms), use an even longer delay
+      if (now - lastShutdownTime < 100) {
+        logger.warn("Detected very tight shutdown loop, using extended delay", logContext);
+        finalDelayMs = Math.max(delayMs, MIN_EXIT_DELAY * 2);
+      }
+    }
+    lastShutdownTime = now;
+
+    // For log deduplication
+    const shortReason = reason.split(" ").slice(0, 3).join(" ");
+    if (lastLoggedReason !== shortReason) {
+      // Only log if the reason has changed to reduce duplicate messages
+      if (!reason.includes("completed in") && !reason.includes("(completed")) {
+        logger.info(`Process ${process.pid} exiting with code ${exitCode}: ${reason}`, logContext);
+      }
+      lastLoggedReason = shortReason;
+    }
+
+    // Clear intervals and timeouts just once
+    if (!clearedTimers) {
+      clearedTimers = true;
+
+      const intervalIds = getActiveIntervalIds();
+      if (intervalIds.length > 0) {
+        logger.debug(`Clearing ${intervalIds.length} active intervals before exit`, logContext);
+        intervalIds.forEach((id) => clearInterval(id));
+      }
+
+      const timerIds = getActiveTimeoutIds();
+      if (timerIds.length > 0) {
+        logger.debug(`Clearing ${timerIds.length} active timeouts before exit`, logContext);
+        timerIds.forEach((id) => clearTimeout(id));
+      }
+    }
+
+    // Use a single exit timeout to prevent multiple exit attempts
+    if (!exitTimeoutSet) {
+      exitTimeoutSet = true;
+
+      // Log the actual exit call for debugging
+      logger.debug(`Executing final process exit (code: ${exitCode})`, logContext);
+
+      exitTimeoutId = setTimeout(() => {
+        logger.debug(`Process exit with code ${exitCode}`, logContext);
+
+        try {
+          // Clean up process locks on exit
+          if (isShard()) {
+            const shardIdNum = parseInt(shardId, 10);
+            removeProcessLock(ProcessType.SHARD, shardIdNum);
+            logger.debug(`Removed shard ${shardId} process lock due to shutdown`, logContext);
+          } else {
+            removeProcessLock(ProcessType.MAIN);
+            logger.debug(`Removed main process lock due to shutdown`, logContext);
+          }
+        } catch {
+          // Silently ignore errors during cleanup
+        }
+
+        // Finally exit the process
+        logger.debug(`Process exit with code ${exitCode} - cleaning up`, logContext);
+        process.exit(exitCode);
+      }, finalDelayMs);
+    }
+
+    // This promise never resolves, as process.exit will terminate execution
     return new Promise((resolve) => {
-      // This will never be called because process.exit terminates execution - skipcq: JS-0263
-      setTimeout(() => resolve(process.exit(exitCode)), delayMs + 100);
+      setTimeout(() => resolve(process.exit(exitCode)), finalDelayMs + 1000);
     });
   } catch (e) {
-    // Last resort if everything else fails
     console.error("Critical error during exit:", e);
     process.kill(process.pid, "SIGKILL");
-
-    // This will never be reached, just for TypeScript
     throw new Error("Process termination failed");
   }
 }
 
 /**
- * Handles graceful shutdown of the application
+ * Helper function to get all active interval IDs using Node.js internals
+ * This helps ensure we don't leave any dangling intervals during shutdown
  */
-export class ShutdownManager {
-  private client: Client;
-  private cleanupFunctions: ShutdownTask[] = [];
-  private isShuttingDown = false;
-  private shutdownTimeout: NodeJS.Timeout | null = null;
-  private _appState: AppState = AppState.RUNNING;
-  private startTime: number = Date.now();
-  private shutdownStartTime = 0;
+function getActiveIntervalIds(): NodeJS.Timeout[] {
+  const ids: NodeJS.Timeout[] = [];
 
-  constructor(client: Client) {
-    this.client = client;
-    this.setupProcessHandlers();
-    logger.debug("Shutdown manager initialized");
+  // Use a hack to access Node's internal timer handles
+  try {
+    // This is a bit hacky but works to access Node's internal timer list
+
+    const timers = process
+      // @ts-expect-error - accessing Node.js internals
+      ._getActiveHandles()
+      .filter(
+        (handler: unknown) =>
+          handler &&
+          typeof handler === "object" &&
+          "hasRef" in handler &&
+          typeof handler.hasRef === "function"
+      );
+
+    // Add all timer/interval handles to our list
+    for (const timer of timers) {
+      if ("_repeat" in timer && timer._repeat) {
+        // Intervals have a _repeat property
+        ids.push(timer as unknown as NodeJS.Timeout);
+      }
+    }
+  } catch (err) {
+    safeLog("debug", `Failed to access internal timer handles: ${err}`, "SHUTDOWN");
   }
 
-  /**
-   * Current application state
-   */
-  public get appState(): AppState {
-    return this._appState;
+  return ids;
+}
+
+/**
+ * Helper function to get all active timeout IDs using Node.js internals
+ */
+function getActiveTimeoutIds(): NodeJS.Timeout[] {
+  const ids: NodeJS.Timeout[] = [];
+
+  try {
+    const timers = process
+      // @ts-expect-error - accessing Node.js internals
+      ._getActiveHandles()
+      .filter(
+        (handler: unknown) =>
+          handler &&
+          typeof handler === "object" &&
+          "hasRef" in handler &&
+          typeof handler.hasRef === "function"
+      );
+
+    for (const timer of timers) {
+      if (!("_repeat" in timer) || !timer._repeat) {
+        // Regular timeouts don't have _repeat
+        ids.push(timer as unknown as NodeJS.Timeout);
+      }
+    }
+  } catch (err) {
+    safeLog("debug", `Failed to access internal timeout handles: ${err}`, "SHUTDOWN");
   }
 
-  /**
-   * Register cleanup functions to be executed on shutdown
-   * @param cleanupFn The function to execute during shutdown
-   * @param options Additional options for this task
-   */
-  public registerCleanupTask(
-    cleanupFn: () => Promise<void>,
-    options: {
+  return ids;
+}
+
+/**
+ * Shutdown Manager interface with enhanced functionality
+ */
+export interface ShutdownManager {
+  readonly appState: AppState;
+  registerCleanupTask(
+    task: () => Promise<void>,
+    options?: {
       priority?: ShutdownPriority;
       name?: string;
       timeout?: number;
-    } = {}
-  ): void {
-    const {
-      priority = ShutdownPriority.NORMAL,
-      name = `Task-${this.cleanupFunctions.length + 1}`,
-      timeout = 5000, // Default 5 second timeout per task
-    } = options;
+    }
+  ): void;
+  registerInterval(intervalId: NodeJS.Timeout): NodeJS.Timeout;
+  registerTimeout(timeoutId: NodeJS.Timeout): NodeJS.Timeout;
+  enterMaintenanceMode(): void;
+  exitMaintenanceMode(): void;
+  getUptime(): number;
+  shutdown(exitCode?: number, reason?: string): Promise<never>;
+}
 
-    this.cleanupFunctions.push({
-      fn: cleanupFn,
-      priority,
-      name,
-      timeout,
+// Module-level singleton instance for the shutdown manager
+let shutdownManagerInstance: ShutdownManager | null = null;
+
+/**
+ * Create a shutdown manager instance
+ * @param client Discord client instance
+ * @returns ShutdownManager instance
+ */
+export function createShutdownManager(client: Client): ShutdownManager {
+  if (shutdownManagerInstance) {
+    safeLog("trace", "Using existing shutdown manager instance", "SHUTDOWN");
+    return shutdownManagerInstance;
+  }
+
+  // Track registered tasks and timers
+  const cleanupTasks: ShutdownTask[] = [];
+  const activeIntervals: NodeJS.Timeout[] = [];
+  const activeTimeouts: NodeJS.Timeout[] = [];
+
+  // Track task names to prevent duplicates
+  const registeredTaskNames = new Set<string>();
+
+  // State tracking
+  const startTime = Date.now();
+  let currentAppState = AppState.RUNNING;
+  let shutdownTimeout: NodeJS.Timeout | null = null;
+
+  // Function to set up process signal handlers
+  function setupProcessHandlers(): void {
+    if (handlerInitialized) {
+      safeLog("trace", "Signal handlers already initialized, skipping", "SHUTDOWN");
+      return; // Don't set up handlers multiple times
+    }
+
+    handlerInitialized = true;
+    safeLog("trace", "Initializing signal handlers", "SHUTDOWN");
+
+    // Track if we've already started shutdown to avoid duplicates
+    let handlerShutdownInitiated = false;
+
+    // For signal deduplication
+    let lastSignalTime = 0;
+    const SIGNAL_COOLDOWN = 1000; // 1 second between signals
+
+    // Handle SIGINT (Ctrl+C)
+    process.on("SIGINT", () => {
+      global.isShuttingDown = true;
+
+      // Deduplicate signals that come too quickly
+      const now = Date.now();
+      if (now - lastSignalTime < SIGNAL_COOLDOWN) {
+        return; // Ignore rapid duplicate signals
+      }
+      lastSignalTime = now;
+
+      // To avoid the double message, only log once
+      if (signalReceivedTime === 0) {
+        signalReceivedTime = now;
+        console.log("\n\nReceived SIGINT (Ctrl+C) - Shutting down Thread-Watcher...");
+      }
+
+      // Special handling for shards
+      if (isShard()) {
+        const shardId = process.env.SHARD_ID || "0";
+        safeLog(
+          "trace",
+          `Shard ${shardId} received SIGINT - waiting for parent coordination`,
+          "SHUTDOWN"
+        );
+
+        // Shards should wait for the main process to tell them to shut down
+        // This prevents race conditions in cleanup
+        safeLog(
+          "trace",
+          `Received SIGINT directly, waiting for main process coordination`,
+          `SHARD ${shardId}`
+        );
+        safeLog("warn", "Received SIGINT signal");
+
+        // Only if we're a shard, don't proceed with our own shutdown sequence
+        return;
+      }
+
+      if (handlerShutdownInitiated || shutdownInProgress) {
+        return; // Already shutting down, prevent duplicate calls
+      }
+
+      handlerShutdownInitiated = true;
+      shutdownInProgress = true;
+
+      safeLog("warn", "Received SIGINT signal");
+
+      // Pass SIGINT message to the shutdown handler
+      shutdown(0, "SIGINT received");
     });
 
-    // Use safeObjectAccess to safely get priority name from enum
-    const priorityNames = Object.keys(ShutdownPriority).filter((key) => isNaN(Number(key)));
-    const priorityValue = priority as number;
+    // Handle SIGTERM (system termination request)
+    process.on("SIGTERM", () => {
+      global.isShuttingDown = true;
 
-    // Find the name that matches this priority value
-    let priorityName = "UNKNOWN";
-    for (const name of priorityNames) {
-      const enumValue = safeObjectAccess(ShutdownPriority, name) as number;
-      if (enumValue === priorityValue) {
-        priorityName = name;
-        break;
+      // Deduplicate signals that come too quickly
+      const now = Date.now();
+      if (now - lastSignalTime < SIGNAL_COOLDOWN) {
+        return; // Ignore rapid duplicate signals
       }
+      lastSignalTime = now;
+
+      // To avoid the double message, only log once
+      if (signalReceivedTime === 0) {
+        signalReceivedTime = now;
+        console.log("\n\nReceived SIGTERM - Shutting down Thread-Watcher...");
+      }
+
+      // Special handling for shards
+      if (isShard()) {
+        const shardId = process.env.SHARD_ID || "0";
+        safeLog(
+          "trace",
+          `Shard ${shardId} received SIGTERM - waiting for parent to coordinate shutdown`,
+          "SHUTDOWN"
+        );
+
+        // Shards should wait for the main process
+        safeLog(
+          "trace",
+          `Received SIGTERM directly, waiting for main process coordination`,
+          `SHARD ${shardId}`
+        );
+        safeLog("warn", "Received SIGTERM signal");
+
+        // Only if we're a shard, don't proceed with our own shutdown sequence
+        return;
+      }
+
+      safeLog("warn", "Received SIGTERM signal");
+
+      // Continue with shutdown only in the main process
+      if (handlerShutdownInitiated || shutdownInProgress) {
+        return; // Already shutting down
+      }
+
+      handlerShutdownInitiated = true;
+      shutdownInProgress = true;
+      shutdown(0, "SIGTERM received");
+    });
+
+    // Handle uncaught exceptions
+    process.on("uncaughtException", (error) => {
+      if (handlerShutdownInitiated || shutdownInProgress) {
+        safeLog(
+          "error",
+          `Additional uncaught exception during shutdown: ${error.message}`,
+          "SHUTDOWN"
+        );
+        return;
+      }
+
+      handlerShutdownInitiated = true;
+      safeLog("error", `Uncaught exception: ${error.message}`, "SHUTDOWN");
+      if (error.stack) {
+        safeLog("error", `Stack trace: ${error.stack}`, "SHUTDOWN");
+      }
+
+      shutdown(1, "Uncaught exception");
+    });
+
+    // Just log unhandled rejections without shutting down
+    process.on("unhandledRejection", (reason) => {
+      const reasonStr = reason instanceof Error ? reason.message : String(reason);
+      safeLog("error", `Unhandled promise rejection: ${reasonStr}`, "SHUTDOWN");
+    });
+  }
+
+  // Create the core shutdown function
+  async function shutdown(exitCode = 0, reason = "Requested shutdown"): Promise<never> {
+    // Prevent multiple shutdowns or too-frequent shutdowns
+    if (shutdownInProgress) {
+      safeLog("info", "Shutdown already in progress, ignoring duplicate request", "SHUTDOWN");
+      return exitProcess(exitCode, "Duplicate shutdown request - already in progress");
     }
 
-    logger.debug(`Registered shutdown task: ${name} (priority: ${priorityName})`);
-  }
-
-  /**
-   * Set application in maintenance mode
-   * (Useful before planned restarts or deployments)
-   */
-  public enterMaintenanceMode(): void {
-    this._appState = AppState.MAINTENANCE;
-    logger.info("Application entered maintenance mode");
-  }
-
-  /**
-   * Exit maintenance mode
-   */
-  public exitMaintenanceMode(): void {
-    this._appState = AppState.RUNNING;
-    logger.info("Application exited maintenance mode");
-  }
-
-  /**
-   * Get uptime in milliseconds
-   */
-  public getUptime(): number {
-    return Date.now() - this.startTime;
-  }
-
-  /**
-   * Gracefully shutdown the application
-   * @param exitCode The exit code to use (defaults to 0)
-   * @param reason The reason for shutdown
-   */
-  public async shutdown(exitCode = 0, reason = "Requested shutdown"): Promise<never> {
-    // If already shutting down, don't start again
-    if (this.isShuttingDown) {
-      logger.warn("Shutdown already in progress");
-      return exitProcess(exitCode, "Shutdown already in progress (duplicate request)");
+    const now = Date.now();
+    if (now - lastShutdownTime < SHUTDOWN_COOLDOWN) {
+      safeLog(
+        "warn",
+        `Shutdown requested too soon after previous attempt (${now - lastShutdownTime}ms). Waiting...`,
+        "SHUTDOWN"
+      );
+      await new Promise((resolve) => setTimeout(resolve, SHUTDOWN_COOLDOWN));
     }
 
-    this.shutdownStartTime = Date.now();
-    this.isShuttingDown = true;
-    this._appState = AppState.SHUTTING_DOWN;
-    logger.info(`Shutting down: ${reason}`);
+    // Set flags and track shutdown start
+    shutdownInProgress = true;
+    lastShutdownTime = Date.now();
+    global.isShuttingDown = true;
+    currentAppState = AppState.SHUTTING_DOWN;
 
-    // Set a safety timeout to force exit if cleanup takes too long
-    this.shutdownTimeout = setTimeout(() => {
-      logger.warn("Shutdown taking too long - forcing exit");
-      exitProcess(exitCode, "Shutdown timeout exceeded");
-    }, 30000); // 30 second safety timeout
+    // Store start time for performance tracking
+    const shutdownStartTime = Date.now();
+    safeLog("info", `Initiating shutdown: ${reason}`, "SHUTDOWN");
+
+    // Use a single timeout reference
+    if (shutdownTimeout) {
+      clearTimeout(shutdownTimeout);
+    }
+
+    // Add safety timeout
+    shutdownTimeout = setTimeout(() => {
+      safeLog("warn", "Shutdown taking too long - forcing exit", "SHUTDOWN");
+      exitProcess(1, "Shutdown timeout exceeded");
+    }, 30000); // 30 second max shutdown time
 
     try {
-      // Stop accepting new connections/requests if applicable
-      logger.debug("Stopping new connections");
-
-      // Disconnect the Discord client
-      if (this.client?.isReady()) {
-        logger.debug("Logging out from Discord...");
+      // Disconnect Discord client
+      if (client?.isReady()) {
+        safeLog("debug", "Destroying Discord client connection...", "SHUTDOWN");
         try {
-          await this.client.destroy();
-          logger.debug("Discord client destroyed successfully");
+          await client.destroy();
+          safeLog("trace", "Discord client destroyed successfully", "SHUTDOWN");
         } catch (error) {
-          logger.error(`Error destroying Discord client: ${error}`);
+          safeLog("error", `Error destroying Discord client: ${String(error)}`, "SHUTDOWN");
         }
       }
 
-      // Sort tasks by priority (highest first)
-      const sortedTasks = [...this.cleanupFunctions].sort((a, b) => b.priority - a.priority);
+      // Clear all active intervals and timeouts
+      if (activeIntervals.length > 0) {
+        safeLog("trace", `Clearing ${activeIntervals.length} tracked intervals`, "SHUTDOWN");
+        activeIntervals.forEach(clearInterval);
+      }
 
-      // Create a safer map of priority names to values
-      const priorityMap = new Map<string, number>();
-      Object.entries(ShutdownPriority)
-        .filter(([key, _]) => isNaN(Number(key)))
-        .forEach(([key, value]) => {
-          if (typeof value === "number") {
-            priorityMap.set(key, value);
-          }
-        });
+      if (activeTimeouts.length > 0) {
+        safeLog("trace", `Clearing ${activeTimeouts.length} tracked timeouts`, "SHUTDOWN");
+        activeTimeouts.forEach(clearTimeout);
+      }
 
-      // Run tasks grouped by priority
-      for (const [priorityName, priorityValue] of priorityMap.entries()) {
-        const tasksInGroup = sortedTasks.filter((task) => task.priority === priorityValue);
+      // Run cleanup tasks in priority order (highest first)
+      const sortedTasks = [...cleanupTasks].sort((a, b) => b.priority - a.priority);
+
+      // Group tasks by priority for better logging
+      const tasksByPriority = new Map<ShutdownPriority, ShutdownTask[]>();
+      for (const task of sortedTasks) {
+        if (!tasksByPriority.has(task.priority)) {
+          tasksByPriority.set(task.priority, []);
+        }
+        const tasks = tasksByPriority.get(task.priority);
+        if (tasks) {
+          tasks.push(task);
+        }
+      }
+
+      // Process each priority group in order
+      for (const priority of [
+        ShutdownPriority.CRITICAL,
+        ShutdownPriority.HIGH,
+        ShutdownPriority.NORMAL,
+        ShutdownPriority.LOW,
+      ]) {
+        const tasksInGroup = tasksByPriority.get(priority) || [];
 
         if (tasksInGroup.length > 0) {
-          logger.debug(`Running ${priorityName} priority shutdown tasks...`);
+          // Use the safe helper function instead of direct enum access
+          const priorityName = safeGetPriorityName(priority);
+          safeLog(
+            "trace",
+            `Running ${priorityName} priority tasks (${tasksInGroup.length})`,
+            "SHUTDOWN"
+          );
 
-          // Run tasks in this priority group
+          // Run all tasks in this priority group
           await Promise.allSettled(
             tasksInGroup.map(async (task) => {
               try {
-                logger.debug(`Starting shutdown task: ${task.name}`);
+                safeLog("debug", `Starting task: ${task.name}`, "SHUTDOWN");
 
-                // Create a timeout for this specific task
+                // Race the task against its timeout
                 const result = await Promise.race([
                   task.fn(),
                   new Promise<never>((_, reject) =>
@@ -275,112 +564,185 @@ export class ShutdownManager {
                   ),
                 ]);
 
-                logger.debug(`Completed shutdown task: ${task.name}`);
+                safeLog("debug", `Completed task: ${task.name}`, "SHUTDOWN");
                 return result;
               } catch (error) {
-                logger.error(`Error in shutdown task ${task.name}: ${error}`);
-                return undefined;
+                safeLog("error", `Error in task ${task.name}: ${String(error)}`, "SHUTDOWN");
               }
             })
           );
         }
       }
 
-      const shutdownDuration = Date.now() - this.shutdownStartTime;
-      logger.done(`Shutdown complete in ${shutdownDuration}ms`);
+      // Handle process lock cleanup - simplified
+      const shardId = isShard() ? getShardId() : undefined;
 
-      // Clear safety timeout since we're exiting normally
-      if (this.shutdownTimeout) {
-        clearTimeout(this.shutdownTimeout);
-        this.shutdownTimeout = null;
+      if (isShard() && shardId !== undefined) {
+        removeProcessLock(ProcessType.SHARD, shardId);
+        safeLog("trace", `Removed process lock for shard ${shardId}`, "SHUTDOWN");
+      } else {
+        removeProcessLock(ProcessType.MAIN);
+        safeLog("trace", "Removed process lock for main process", "SHUTDOWN");
       }
 
-      return exitProcess(exitCode, `${reason} (completed in ${shutdownDuration}ms)`);
+      // Clear safety timeout
+      if (shutdownTimeout) {
+        clearTimeout(shutdownTimeout);
+        shutdownTimeout = null;
+      }
+
+      // Calculate and log shutdown duration
+      const shutdownDuration = Date.now() - shutdownStartTime;
+      safeLog("info", `Shutdown completed in ${shutdownDuration}ms`, "SHUTDOWN");
+
+      // Reset flag - even though we're exiting, this helps in case something prevents the exit
+      shutdownInProgress = false;
+
+      // Use a slightly longer delay for final exit to ensure logs are written
+      return exitProcess(exitCode, `${reason} (completed in ${shutdownDuration}ms)`, 1000);
     } catch (error) {
-      logger.error(`Unhandled error during shutdown: ${error}`);
+      // Use handleApiError for better error handling and reporting
+      await handleApiError(
+        "Critical error during shutdown",
+        async () => {
+          throw error; // Rethrow to trigger the error handler
+        },
+        {
+          retries: 0,
+          context: "Shutdown Process",
+          reportAtSeverity: ErrorSeverity.CRITICAL,
+        }
+      ).catch(() => {
+        // This catch will always run since we're throwing above
+        safeLog("error", `Unhandled error during shutdown: ${String(error)}`, "SHUTDOWN");
+      });
 
-      // Clear safety timeout since we're exiting due to error
-      if (this.shutdownTimeout) {
-        clearTimeout(this.shutdownTimeout);
-        this.shutdownTimeout = null;
+      // Clear safety timeout
+      if (shutdownTimeout) {
+        clearTimeout(shutdownTimeout);
+        shutdownTimeout = null;
       }
 
-      return exitProcess(1, `Error during shutdown: ${error}`);
+      // Reset flag before exit so future restarts can work
+      shutdownInProgress = false;
+
+      return exitProcess(1, `Error during shutdown: ${String(error)}`, 1000);
     }
   }
 
-  /**
-   * Set up handlers for process signals and uncaught exceptions
-   */
-  private setupProcessHandlers(): void {
-    // Using a flag to prevent multiple signal handlers from triggering duplicate shutdowns
-    let shutdownInitiated = false;
+  // Initialize process handlers
+  setupProcessHandlers();
 
-    // Handle termination signals using named handlers
-    const handleSigInt = () => {
-      if (shutdownInitiated) {
-        logger.debug("Ignoring duplicate SIGINT signal - shutdown already in progress");
+  // Return the shutdown manager object
+  const manager: ShutdownManager = {
+    // Get current application state
+    get appState(): AppState {
+      return currentAppState;
+    },
+
+    // Register cleanup task to run during shutdown
+    registerCleanupTask(task: () => Promise<void>, options = {}): void {
+      const {
+        priority = ShutdownPriority.NORMAL,
+        name = `Task-${cleanupTasks.length + 1}`,
+        timeout = 5000, // Default 5 second timeout per task
+      } = options;
+
+      // Prevent duplicate task registration
+      if (registeredTaskNames.has(name)) {
+        safeLog(
+          "warn",
+          `Shutdown task "${name}" already registered, skipping duplicate`,
+          "SHUTDOWN"
+        );
         return;
       }
 
-      // Skip handling SIGINT in shard processes - let parent coordinate
-      if (process.env.IS_SHARD === "true") {
-        logger.debug("SIGINT received in shard - waiting for parent to coordinate shutdown");
-        return;
-      }
+      registeredTaskNames.add(name);
+      cleanupTasks.push({
+        fn: task,
+        priority,
+        name,
+        timeout,
+      });
 
-      shutdownInitiated = true;
-      logger.info("Received SIGINT signal");
-      this.shutdown(0, "SIGINT received");
-    };
+      // Use the safe helper function here too
+      safeLog(
+        "trace",
+        `Registered shutdown task: ${name} (priority: ${safeGetPriorityName(priority)})`,
+        "SHUTDOWN"
+      );
+    },
 
-    const handleSigTerm = () => {
-      if (shutdownInitiated) {
-        logger.debug("Ignoring duplicate SIGTERM signal - shutdown already in progress");
-        return;
-      }
+    // Register an interval to be cleared on shutdown
+    registerInterval(intervalId: NodeJS.Timeout): NodeJS.Timeout {
+      activeIntervals.push(intervalId);
+      return intervalId;
+    },
 
-      // Skip handling SIGTERM in shard processes - let parent coordinate
-      if (process.env.IS_SHARD === "true") {
-        logger.debug("SIGTERM received in shard - waiting for parent to coordinate shutdown");
-        return;
-      }
+    // Register a timeout to be cleared on shutdown
+    registerTimeout(timeoutId: NodeJS.Timeout): NodeJS.Timeout {
+      activeTimeouts.push(timeoutId);
+      return timeoutId;
+    },
 
-      shutdownInitiated = true;
-      logger.info("Received SIGTERM signal");
-      this.shutdown(0, "SIGTERM received");
-    };
+    // Set application in maintenance mode
+    enterMaintenanceMode(): void {
+      currentAppState = AppState.MAINTENANCE;
+      safeLog("info", "Application entered maintenance mode", "SHUTDOWN");
+    },
 
-    const handleUncaughtException = (error: Error) => {
-      if (shutdownInitiated) {
-        logger.error(`Additional uncaught exception during shutdown: ${error.message}`);
-        return;
-      }
-      shutdownInitiated = true;
-      logger.error(`Uncaught exception: ${error.message}`);
-      if (error.stack) {
-        logger.error(`Stack trace: ${error.stack}`);
-      }
-      this.shutdown(1, "Uncaught exception");
-    };
+    // Exit maintenance mode
+    exitMaintenanceMode(): void {
+      currentAppState = AppState.RUNNING;
+      safeLog("info", "Application exited maintenance mode", "SHUTDOWN");
+    },
 
-    const handleUnhandledRejection = (reason: unknown) => {
-      const reasonStr = reason instanceof Error ? reason.message : String(reason);
-      logger.error(`Unhandled promise rejection: ${reasonStr}`);
-      // Log but don't automatically shutdown for unhandled rejections
-    };
+    // Get uptime in milliseconds
+    getUptime(): number {
+      return Date.now() - startTime;
+    },
 
-    // Attach handlers
-    process.on("SIGINT", handleSigInt);
-    process.on("SIGTERM", handleSigTerm);
-    process.on("uncaughtException", handleUncaughtException);
-    process.on("unhandledRejection", handleUnhandledRejection);
+    // Initiate application shutdown
+    shutdown,
+  };
 
-    logger.debug("Signal handlers initialized in shutdown manager");
-  }
+  // Store and return the instance
+  shutdownManagerInstance = manager;
+  return manager;
 }
 
-// Export a factory function to create the shutdown manager
-export const createShutdownManager = (client: Client): ShutdownManager => {
-  return new ShutdownManager(client);
-};
+/**
+ * Initialize shutdown handlers for the application (for shard processes)
+ */
+export function initializeShutdownHandlers(isShardProcess = false): void {
+  // Add specific handling for shards
+  if (isShardProcess) {
+    process.on("message", (message: unknown) => {
+      // Listen for shutdown commands from the parent process
+      if (typeof message === "object" && message !== null) {
+        if ("type" in message && message.type === "SHUTDOWN") {
+          const exitCode = "code" in message && typeof message.code === "number" ? message.code : 0;
+          const reason =
+            "reason" in message && typeof message.reason === "string"
+              ? message.reason
+              : "Requested by parent";
+
+          // Get the shard ID for better logging
+          const shardId = process.env.SHARD_ID || "0";
+          safeLog(
+            "info",
+            `Shard ${shardId} received shutdown command from parent: ${reason}`,
+            "SHUTDOWN"
+          );
+
+          // Don't directly call process.exit here - use the shutdown handler
+          if (!shutdownInProgress) {
+            shutdownInProgress = true;
+            exitProcess(exitCode, reason);
+          }
+        }
+      }
+    });
+  }
+}

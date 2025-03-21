@@ -10,44 +10,60 @@ import {
   MessageActionRowComponentBuilder,
   MessageFlagsBitField,
 } from "discord.js";
-import { commands } from "../bot";
+import { getCommands } from "../bot";
 import { ButtonInteractionQueue } from "../components/Button";
 import { ModalInteractionQueue } from "../components/Modal";
 import { StringSelectInteractionQueue } from "../components/StringSelect";
 import { config, logger } from "../index";
-import {
-  BuildBaseEmbedFunction,
-  Command,
-  baseEmbedOptions,
-  statusType,
-} from "../interfaces/command";
+import { BuildBaseEmbedFunction, Command, baseEmbedOptions } from "../interfaces/command";
 import TwGenericComponent from "../interfaces/genericComponent";
 import { ErrorSeverity, handleApiError, handleCommandError } from "../utilities/errorSystem";
+import { StatusType, isValidStatusType } from "../utilities/logger";
 import { rateLimitManager } from "../utilities/rateLimitManager";
+
+const commands = getCommands();
 
 /**
  * Creates a styled embed for command responses
  */
 const buildBaseEmbed: BuildBaseEmbedFunction = (
   title: string,
-  status: statusType = statusType.info,
+  status: StatusType = "info" as StatusType,
   misc?: baseEmbedOptions
 ): EmbedBuilder => {
+  let validatedStatus = status;
+
+  // Validate status before using it
+  if (!isValidStatusType(status)) {
+    logger.warn(`Invalid status type '${status}' used in buildBaseEmbed, defaulting to 'info'`);
+    validatedStatus = "info" as StatusType;
+  }
+
+  // Map variant status types to their main types
+  const mappedStatus =
+    validatedStatus === "warn"
+      ? "warning"
+      : validatedStatus === "done"
+        ? "success"
+        : validatedStatus;
+
   // Use config styling if available, otherwise use fallback colors
-  const style = config.style?.[status] || {
-    colour:
-      status === statusType.error
+  const style = config?.style?.[mappedStatus as keyof typeof config.style] ?? {
+    color:
+      validatedStatus === ("error" as StatusType)
         ? "Red"
-        : status === statusType.warning
+        : validatedStatus === ("warning" as StatusType) ||
+            validatedStatus === ("warn" as StatusType)
           ? "Yellow"
-          : status === statusType.success
+          : validatedStatus === ("success" as StatusType) ||
+              validatedStatus === ("done" as StatusType)
             ? "Green"
             : "Blue",
     emoji: "",
   };
 
   const embed = new EmbedBuilder()
-    .setColor(style.colour as ColorResolvable)
+    .setColor(style.color as ColorResolvable)
     .setTitle(`${style.emoji || ""} ${title}`.trim());
 
   if (misc?.description) embed.setDescription(misc.description);
@@ -119,7 +135,7 @@ function validateGatekeeping(
     const owners = Array.isArray(config.owners) ? config.owners : [];
 
     if (!owners.includes(interaction.user.id)) {
-      return buildBaseEmbed("Owner Only", statusType.error, {
+      return buildBaseEmbed("Owner Only", "error" as StatusType, {
         description: `Command \`${interaction.commandName}\` is restricted to owner${owners.length > 1 ? "s" : ""}.`,
       });
     }
@@ -132,7 +148,7 @@ function validateGatekeeping(
     config.devServer &&
     interaction.guild.id !== config.devServer
   ) {
-    return buildBaseEmbed("Dev Server Only", statusType.error, {
+    return buildBaseEmbed("Dev Server Only", "error" as StatusType, {
       description: `Command \`${interaction.commandName}\` can only be used in the development server.`,
     });
   }
@@ -143,7 +159,7 @@ function validateGatekeeping(
     !interaction.memberPermissions?.has(gatekeeping.userPermissions)
   ) {
     const missing = interaction.memberPermissions?.missing(gatekeeping.userPermissions);
-    return buildBaseEmbed("Missing Permissions", statusType.error, {
+    return buildBaseEmbed("Missing Permissions", "error" as StatusType, {
       description: `Command \`${interaction.commandName}\` requires additional permissions.`,
       fields: [
         {
@@ -157,7 +173,7 @@ function validateGatekeeping(
   // Check bot permissions
   if (gatekeeping.botPermissions && !interaction.appPermissions?.has(gatekeeping.botPermissions)) {
     const missing = interaction.appPermissions?.missing(gatekeeping.botPermissions);
-    return buildBaseEmbed("Missing Permissions", statusType.error, {
+    return buildBaseEmbed("Missing Permissions", "error" as StatusType, {
       description: `Command \`${interaction.commandName}\` requires the bot to have additional permissions.`,
       fields: [
         {
@@ -197,7 +213,7 @@ const handleCommandExecution = async (interaction: ChatInputCommandInteraction):
   if (!interaction.channel) {
     await sendResponse(
       interaction,
-      buildBaseEmbed("Unknown Channel", statusType.error, {
+      buildBaseEmbed("Unknown Channel", "error" as StatusType, {
         description:
           "Your interaction happened in an unknown channel.\n" +
           "**If this is a DM:** run it in a server. Thread-Watcher does not support DMs\n" +

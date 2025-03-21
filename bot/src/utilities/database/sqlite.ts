@@ -1,7 +1,8 @@
-import { ChannelData, Database, ThreadData } from "../../interfaces/database"; // Fix import path
 import sql, { Database as sqliteDatabase } from "better-sqlite3";
-import { ConfigFile } from "../cnf/index";
 import { join } from "path";
+import { logger } from "../../index";
+import { ChannelData, Database, ThreadData } from "../../interfaces/database";
+import { ConfigFile } from "../cnf/index";
 import { getBackupName } from "./DatabaseManager";
 
 // Type for internal database rows
@@ -22,10 +23,37 @@ interface ThreadRow {
 
 class sqlite implements Database {
   db: sqliteDatabase;
+  private isReady = false;
+  private readyPromise: Promise<void> | null = null;
 
   constructor(config: ConfigFile) {
     const dbPath = join(config.database.options.dataLocation, "data.db");
     this.db = sql(dbPath);
+
+    // Initialize the database with schema migration support
+    this.readyPromise = this.init().then(() => {
+      this.isReady = true;
+    });
+  }
+
+  /**
+   * Initialize the database with schema checks and migrations
+   * @private
+   */
+  private async init(): Promise<void> {
+    // Create the basic tables
+    await this.createTables();
+
+    // No need to migrate or populate shardIds anymore
+    // as we're not storing them in the database
+  }
+
+  /**
+   * Ensures the database is ready before running queries
+   */
+  async waitForReady(): Promise<void> {
+    if (this.isReady) return;
+    if (this.readyPromise) await this.readyPromise;
   }
 
   createTables(): Promise<void> {
@@ -40,8 +68,9 @@ class sqlite implements Database {
           "CREATE TABLE IF NOT EXISTS channels (id TEXT PRIMARY KEY, server TEXT, regex TEXT, roles TEXT, tags TEXT)"
         )
         .run();
-      this.db.prepare("CREATE TABLE IF NOT EXISTS blacklist (id TEXT PRIMARY KEY, reason TEXT)");
-      // we aint normalising this bitch
+      this.db
+        .prepare("CREATE TABLE IF NOT EXISTS blacklist (id TEXT PRIMARY KEY, reason TEXT)")
+        .run();
       this.db
         .prepare(
           "CREATE TABLE IF NOT EXISTS config (server TEXT, cfg_id TEXT, value TEXT, PRIMARY KEY (server, cfg_id))"
@@ -66,11 +95,17 @@ class sqlite implements Database {
   }
 
   getConfigValue(server: string, key: string): Promise<string> {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       const res = this.db
         .prepare("SELECT * FROM config WHERE server = ? AND cfg_id = ?")
-        .get(server, key) as { server: string; cfg_id: string; value: string };
-      if (!res) return reject(new Error("NO ROW FOUND"));
+        .get(server, key) as { server: string; cfg_id: string; value: string } | undefined;
+      if (!res) {
+        // Change from warn to debug level since this is expected for new servers
+        logger.debug(`Config value for ${server}/${key} not found; using default value`);
+        // Return a default value here. Adjust default as needed.
+        resolve("");
+        return;
+      }
       resolve(res.value);
     });
   }
@@ -85,11 +120,17 @@ class sqlite implements Database {
     });
   }
 
-  insertThread(id: string, dueArchive: number, server: string): Promise<void> {
-    return new Promise((resolve) => {
-      this.db.prepare("REPLACE INTO threads VALUES(?,?,?,1)").run(id, server, dueArchive);
-      resolve();
-    });
+  /**
+   * Insert a thread into the database (without shardId)
+   */
+  async insertThread(id: string, dueArchive: number, server: string): Promise<void> {
+    await this.waitForReady();
+    const query = `
+      INSERT OR REPLACE INTO threads (id, dueArchive, server, watching)
+      VALUES (?, ?, ?, ?)
+    `;
+
+    this.db.prepare(query).run(id, dueArchive, server, 1);
   }
 
   updateDueArchive(id: string, dueArchive: number): Promise<void> {
@@ -198,23 +239,27 @@ class sqlite implements Database {
   }
 
   /**
-   * Get all threads that are being watched
+   * Get all watched threads from the database (no shardId)
    */
-  getAllWatchedThreads(): Promise<ThreadData[]> {
-    return new Promise((resolve) => {
-      const threads = this.db
-        .prepare("SELECT id, server, dueArchive, watching FROM threads WHERE watching = 1")
-        .all() as ThreadRow[];
+  async getAllWatchedThreads(): Promise<ThreadData[]> {
+    await this.waitForReady();
 
-      resolve(
-        threads.map((thread) => ({
-          id: thread.id,
-          server: thread.server,
-          dueArchive: thread.dueArchive,
-          watching: Boolean(thread.watching),
-        }))
-      );
-    });
+    const rows = this.db
+      .prepare(
+        `
+      SELECT id, dueArchive, server, watching
+      FROM threads
+      WHERE watching = 1
+    `
+      )
+      .all() as ThreadRow[];
+
+    return rows.map((row) => ({
+      id: row.id,
+      dueArchive: row.dueArchive ?? 0, // Ensure dueArchive is never undefined
+      server: row.server,
+      watching: Boolean(row.watching),
+    }));
   }
 
   // Implement close method if not already present
@@ -223,6 +268,27 @@ class sqlite implements Database {
       this.db.close();
       resolve();
     });
+  }
+
+  /**
+   * Check if a channel is being watched
+   */
+  async isChannelWatched(channelId: string, guildId: string): Promise<boolean> {
+    if (!channelId || !guildId) {
+      return false;
+    }
+
+    try {
+      await this.waitForReady();
+      const result = this.db
+        .prepare("SELECT COUNT(*) as count FROM channels WHERE id = ? AND server = ?")
+        .get(channelId, guildId) as { count: number };
+
+      return result && result.count > 0;
+    } catch (error) {
+      logger.warn(`Error checking if channel ${channelId} is watched: ${error}`);
+      return false;
+    }
   }
 }
 

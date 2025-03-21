@@ -1,1 +1,16 @@
 *.db
+
+# Editor directories and files
+.vscode/
+.vscode/**/*
+.idea/
+*.sublime-*
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Scripts directory
+scripts/
+scripts/**/*

@@ -1,9 +1,9 @@
-import { config, webLog } from "../../index";
+import { existsSync, lstatSync, mkdirSync, readdirSync, rmSync } from "fs";
 import { schedule } from "node-cron";
-import { BackupProviders, getBackupProvider } from "../database/DatabaseManager";
 import { join } from "path";
-import { existsSync, mkdirSync, readdirSync, rmSync, lstatSync } from "fs";
+import { config, webLog } from "../../index";
 import { Database } from "../../interfaces/database";
+import { BackupProviders, getBackupProvider } from "../database/DatabaseManager";
 import { Log76 } from "../logger";
 
 export default function scheduleBackups(database: Database, logger: Log76) {
@@ -11,12 +11,12 @@ export default function scheduleBackups(database: Database, logger: Log76) {
   const backupsDirPath = join(config.database.options.dataLocation, "./backups");
 
   if (!existsSync(backupsDirPath)) {
-    logger.debug("backup directory does not exist. Creating one");
+    logger.debug("backup directory does not exist. Creating one", "MAIN");
     mkdirSync(backupsDirPath);
   }
 
   schedule(config.database.backupInterval, () => {
-    logger.info("running backup");
+    logger.debug("Running backup", "MAIN");
     database
       .createBackup(backupsDirPath)
       .then(async (backupName) => {

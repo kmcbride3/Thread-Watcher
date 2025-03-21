@@ -100,4 +100,35 @@ export default class UserSettings {
   clearGuildCache(guild: string): void {
     this.cache.sweep((_, key) => key.startsWith(`${guild}/`));
   }
+
+  /**
+   * Checks if a specific channel is being watched in the specified guild
+   * @param channelId The ID of the channel to check
+   * @param guildId The ID of the guild the channel belongs to
+   * @returns Promise<boolean> True if the channel is watched, false otherwise
+   */
+  public async isChannelWatched(channelId: string, guildId: string): Promise<boolean> {
+    try {
+      if (!this.db) {
+        logger.warn("Database not available for channel watching check", "User Settings");
+        return false;
+      }
+
+      await rateLimitManager.waitForRateLimit(`db/channel-check/${guildId}`);
+
+      return await handleApiError(
+        null,
+        async () => await this.db.isChannelWatched(channelId, guildId),
+        {
+          retries: 2,
+          retryDelay: 500,
+          reportAtSeverity: ErrorSeverity.LOW,
+          context: `UserSettings:isChannelWatched(${channelId}, ${guildId})`,
+        }
+      );
+    } catch (error) {
+      logger.warn(`Error checking if channel ${channelId} is watched: ${error}`, "User Settings");
+      return false;
+    }
+  }
 }

@@ -1,5 +1,12 @@
 version = 1
 
+exclude_patterns = [
+    "**/node_modules/**",
+    "**/dist/**",
+    "*config.json5",
+    "*config.mjs"
+]
+
 [[analyzers]]
 name = "javascript"
 

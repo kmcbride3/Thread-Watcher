@@ -1,8 +1,8 @@
-import { statSync } from "fs";
-import { BackupProvider } from "../../../interfaces/database";
 import { WebhookClient } from "discord.js";
-import { ConfigFile } from "../../../utilities/cnf/index";
+import { statSync } from "fs";
 import Logger from "log75";
+import { BackupProvider } from "../../../interfaces/database";
+import { ConfigFile } from "../../cnf/index";
 
 export default class DiscordMessage implements BackupProvider {
   private webhookClient!: WebhookClient;
@@ -29,7 +29,7 @@ export default class DiscordMessage implements BackupProvider {
       if (!this.webhookClient) return reject(Error("no webhook client has been initiated."));
 
       this.webhookClient.send({ files: [path], username: "Backup Provider" });
-      resolve(null);
+      return resolve(null);
     });
   }
 }

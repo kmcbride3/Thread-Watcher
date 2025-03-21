@@ -1,7 +1,7 @@
 import { CommandInteraction, MessageFlagsBitField } from "discord.js";
 import { logger } from "../index";
-import { statusType } from "../interfaces/command";
 import { EmbedBuilderFunction } from "./embedUtils";
+import { StatusType } from "./logger";
 
 /**
  * Safely respond to an interaction with an error message
@@ -17,7 +17,7 @@ export async function safeReplyWithError(
   logger.error(`Command error: ${errorMessage}`);
 
   try {
-    const errorEmbed = embedBuilder(errorTitle, statusType.error, {
+    const errorEmbed = embedBuilder(errorTitle, "error" as StatusType, {
       description: errorDescription,
     });
 

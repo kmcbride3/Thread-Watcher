@@ -1,10 +1,10 @@
-import { CommandInteraction } from "discord.js";
+import { codeBlock, CommandInteraction } from "discord.js";
 import { logger } from "../index";
 import { handleApiError as baseHandleApiError } from "./apiErrorHandler";
 import { EmbedBuilderFunction } from "./embedUtils";
 import { safeReplyWithError } from "./errorHandling";
 import { reportError as baseReportError } from "./errorReporter";
-import { formatCodeBlock, truncate } from "./formatUtils";
+import { truncate } from "./formatUtils";
 
 /**
  * Error severity levels for better error handling decisions
@@ -88,7 +88,7 @@ export async function handleCommandError(
   } = options;
 
   const errorMessage = error instanceof Error ? error.message : String(error);
-  const errorContext = context ? formatCodeBlock(context, "ini") : "";
+  const errorContext = context ? codeBlock(context, "ini") : "";
   logger.error(`${errorContext}: ${truncate(errorMessage, 200)}`);
 
   // Determine severity and report if needed

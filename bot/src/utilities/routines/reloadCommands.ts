@@ -1,7 +1,9 @@
-import { commands } from "../../bot";
+import { getCommands } from "../../bot";
 import { logger } from "../../index";
 import { ErrorSeverity, handleApiError } from "../errorSystem";
 import loadCommands from "../loadCommands";
+
+const commands = getCommands();
 
 /**
  * Reload all commands with proper error handling

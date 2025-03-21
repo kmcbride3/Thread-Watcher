@@ -1,7 +1,7 @@
 import { AttachmentBuilder, ChatInputCommandInteraction, SlashCommandBuilder } from "discord.js";
-import { db } from "../../index";
-import { Command, statusType } from "../../interfaces/command";
+import { Command } from "../../interfaces/command";
 import { ChannelData, ThreadData } from "../../interfaces/database";
+import { SERVICE_KEYS, serviceRegistry } from "../../services";
 import { ErrorSeverity, handleApiError, handleCommandError } from "../../utilities/errorSystem";
 import { rateLimitManager } from "../../utilities/rateLimitManager";
 
@@ -116,13 +116,17 @@ const exportCommand: Command = {
       if (!guildId) {
         await interaction.editReply({
           embeds: [
-            buildBaseEmbed("Error", statusType.error, {
+            buildBaseEmbed("Error", "error", {
               description: "No guild ID provided",
             }),
           ],
         });
         return;
       }
+
+      const db = serviceRegistry.get(SERVICE_KEYS.DATABASE, {
+        errorContext: "Export command database access",
+      });
 
       const { threads, channels, guildName } = await handleApiError(
         "Failed to fetch guild data",
@@ -184,7 +188,7 @@ const exportCommand: Command = {
       if (files.length === 0) {
         await interaction.editReply({
           embeds: [
-            buildBaseEmbed("Not found", statusType.error, {
+            buildBaseEmbed("Not found", "error", {
               description: `Found no data from guild "${guildName}" (${guildId})`,
             }),
           ],
@@ -194,7 +198,7 @@ const exportCommand: Command = {
 
       await interaction.editReply({
         embeds: [
-          buildBaseEmbed("Data export", statusType.success, {
+          buildBaseEmbed("Data export", "success", {
             description: `Here's all the data saved from guild ${guildName}`,
             fields: [
               { name: "Guild ID", value: guildId, inline: true },

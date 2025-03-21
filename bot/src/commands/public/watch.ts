@@ -6,24 +6,22 @@ import {
   MessageFlagsBitField,
   PermissionFlagsBits,
   SlashCommandBuilder,
+  ThreadAutoArchiveDuration,
   ThreadChannel,
 } from "discord.js";
-import { threads } from "../../bot";
 import { logger } from "../../index";
-import { Command, statusType } from "../../interfaces/command";
+import { Command } from "../../interfaces/command";
 import { EmbedBuilderFunction } from "../../utilities/embedUtils";
 import { ErrorSeverity, handleApiError, handleCommandError } from "../../utilities/errorSystem";
 import { formatArchiveDuration } from "../../utilities/formatUtils";
+import { StatusType } from "../../utilities/logger";
 import { rateLimitManager } from "../../utilities/rateLimitManager";
+import { addThread, removeThread, setArchive } from "../../utilities/threadActions";
+import { threadManager } from "../../utilities/threadManager";
 import {
-  addThread,
-  dueArchiveTimestamp,
-  removeThread,
-  setArchive,
-} from "../../utilities/threadActions";
-import {
-  THREAD_CHANNEL_TYPES,
   createThreadValidationErrorHandler,
+  dueArchiveTimestamp,
+  THREAD_CHANNEL_TYPES,
   validateThread,
 } from "../../utilities/threadUtils";
 
@@ -33,6 +31,8 @@ interface ThreadWatchOptions {
   name: string;
   type: number;
 }
+
+const threads = threadManager.getWatchedThreads();
 
 const watchCommand: Command = {
   run: async (interaction: ChatInputCommandInteraction, buildBaseEmbed: EmbedBuilderFunction) => {
@@ -97,6 +97,12 @@ async function handleUnwatchThread(
   interaction: ChatInputCommandInteraction,
   buildBaseEmbed: EmbedBuilderFunction
 ): Promise<void> {
+  // Check if interaction is still valid before doing any operations
+  if (!interaction.isRepliable()) {
+    logger.warn(`Attempted to unwatch thread ${thread.id} with invalid interaction`);
+    return;
+  }
+
   await handleApiError(
     "Failed to remove thread from watch list",
     async () => {
@@ -104,7 +110,7 @@ async function handleUnwatchThread(
 
       await interaction.editReply({
         embeds: [
-          buildBaseEmbed("Unwatched thread", statusType.success, {
+          buildBaseEmbed("Unwatched thread", "success" as StatusType, {
             showAuthor: true,
             description: `Bot will no longer keep <#${thread.id}> active`,
             fields: [
@@ -133,12 +139,18 @@ async function handleWatchThread(
   interaction: ChatInputCommandInteraction,
   buildBaseEmbed: EmbedBuilderFunction
 ): Promise<void> {
+  // Check if interaction is still valid before doing any operations
+  if (!interaction.isRepliable()) {
+    logger.warn(`Attempted to watch thread ${thread.id} with invalid interaction`);
+    return;
+  }
+
   await handleApiError(
     "Failed to add thread to watch list",
     async () => {
       const dueTimestamp =
         dueArchiveTimestamp(thread.autoArchiveDuration ?? 0, thread.lastMessage?.createdAt) ??
-        Date.now() + 3600000; // Default to 1 hour if calculation fails
+        Date.now() + ThreadAutoArchiveDuration.OneHour; // Default to 1 hour if calculation fails
 
       await addThread(thread.id, dueTimestamp, thread.guildId);
 
@@ -152,7 +164,7 @@ async function handleWatchThread(
 
         await interaction.editReply({
           embeds: [
-            buildBaseEmbed("Watched thread", statusType.success, {
+            buildBaseEmbed("Watched thread", "success" as StatusType, {
               showAuthor: true,
               description: `Bot will keep <#${thread.id}> active`,
               fields: [
@@ -168,7 +180,7 @@ async function handleWatchThread(
       } else {
         await interaction.editReply({
           embeds: [
-            buildBaseEmbed("Watched thread but...", statusType.warning, {
+            buildBaseEmbed("Watched thread but...", "warning" as StatusType, {
               showAuthor: true,
               description: `Bot has added <#${thread.id}> to the watchlist.\n\nHowever, the thread will __**NOT**__ be kept active as the bot has insufficient permissions for the thread`,
             }),
@@ -178,7 +190,7 @@ async function handleWatchThread(
 
       if (thread.archived && thread.unarchivable) {
         try {
-          await setArchive(thread, 10080);
+          await setArchive(thread, ThreadAutoArchiveDuration.OneWeek);
         } catch (err: unknown) {
           if (err instanceof DiscordAPIError) {
             const errorCode = err.code;

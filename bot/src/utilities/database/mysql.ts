@@ -3,12 +3,12 @@ import { Collection } from "discord.js";
 import { createWriteStream, existsSync, mkdirSync } from "fs";
 import { createPool, Pool, PoolConnection, QueryOptions } from "mysql";
 import { join } from "path";
+import { logger } from "../../index";
 import { ChannelData, Database, ThreadData } from "../../interfaces/database";
 import { handleApiError } from "../apiErrorHandler";
 import { ConfigFile } from "../cnf/index";
-import { Log76 } from "../logger";
 import { rateLimitManager } from "../rateLimitManager";
-import { getBackupName } from "./DatabaseManager";
+import { clearDatabaseTimeout, createDatabaseTimeout, getBackupName } from "./DatabaseManager";
 
 interface ThreadRow {
   id: string;
@@ -27,12 +27,13 @@ export default class mysql implements Database {
     password: string;
     database: string;
   };
-  private logger: Log76;
   private queryCache = new Collection<string, { data: unknown; timestamp: number }>();
   private readonly cacheTTL = 30000; // 30 seconds cache lifetime
   private preparedStatements = new Collection<string, string>();
+  private isReady = false;
+  private readyPromise: Promise<void> | null = null;
 
-  constructor(config: ConfigFile, logger: Log76) {
+  constructor(config: ConfigFile) {
     const { host, user, password, database } = config.database.options;
 
     if (!host || !user || !database) {
@@ -43,7 +44,6 @@ export default class mysql implements Database {
     this.database = database;
     this.connDetails = { host, user, password, database };
     this.config = config;
-    this.logger = logger;
 
     this.connection = createPool({
       host,
@@ -62,6 +62,19 @@ export default class mysql implements Database {
     this.initPreparedStatements();
 
     setInterval(() => this.cleanupCache(), 60000);
+
+    // Initialize the database with schema migration support
+    this.readyPromise = this.init().then(() => {
+      this.isReady = true;
+    });
+  }
+
+  /**
+   * Ensures the database is ready before running queries
+   */
+  async waitForReady(): Promise<void> {
+    if (this.isReady) return;
+    if (this.readyPromise) await this.readyPromise;
   }
 
   /**
@@ -112,10 +125,10 @@ export default class mysql implements Database {
       const now = Date.now();
       const expiredCount = this.queryCache.sweep((entry) => now - entry.timestamp > this.cacheTTL);
       if (expiredCount > 0) {
-        this.logger.trace(`Cleaned up ${expiredCount} expired database cache entries`);
+        logger.trace(`Cleaned up ${expiredCount} expired database cache entries`);
       }
     } catch (error) {
-      this.logger.error(`Error during cache cleanup: ${String(error)}`);
+      logger.error(`Error during cache cleanup: ${String(error)}`);
     }
   }
 
@@ -206,6 +219,23 @@ export default class mysql implements Database {
     );
   }
 
+  /**
+   * Initialize the database with schema checks and migrations
+   * @private
+   */
+  private async init(): Promise<void> {
+    try {
+      // Create the basic tables
+      await this.createTables();
+
+      // No need to check for or migrate shardId column
+      // No need to populate shardIds
+    } catch (error) {
+      logger.error(`Database initialization failed: ${error}`);
+      throw error;
+    }
+  }
+
   async createTables(): Promise<void> {
     const sql = `
       CREATE TABLE IF NOT EXISTS \`threads\` (
@@ -235,7 +265,7 @@ export default class mysql implements Database {
     `;
 
     await this.query(sql, [], { rateLimit: "db/schema" });
-    this.logger.debug("MySQL database tables initialized or verified");
+    logger.debug("MySQL database tables initialized or verified");
   }
 
   /**
@@ -292,6 +322,8 @@ export default class mysql implements Database {
       return res[0].value;
     }
 
+    // Change from warn to debug level since this is expected for new servers
+    logger.debug(`Config value for ${guildID}/${key} not found; using default value`);
     throw "NO ROW FOUND";
   }
 
@@ -320,14 +352,25 @@ export default class mysql implements Database {
   /**
    * Insert thread with validation
    */
-  async insertThread(id: string, dueArchive: number, server: string): Promise<void> {
-    if (!id || !server) {
-      throw new Error("Thread ID and server are required");
-    }
+  // Removed duplicate implementation in favor of the one with shardId support below
 
-    const sql =
-      this.preparedStatements.get("insertThread") || "REPLACE INTO threads VALUES(?,?,?,TRUE)";
-    await this.query(sql, [id, server, dueArchive], { rateLimit: "db/threads/insert" });
+  /**
+   * Insert a thread into the database without shardId
+   */
+  async insertThread(id: string, dueArchive: number, server: string): Promise<void> {
+    await this.waitForReady();
+
+    const query = `
+      INSERT INTO threads (id, dueArchive, server, watching) 
+      VALUES (?, ?, ?, ?)
+      ON DUPLICATE KEY UPDATE
+        dueArchive = VALUES(dueArchive),
+        watching = VALUES(watching)
+    `;
+
+    await this.query(query, [id, dueArchive, server, 1], {
+      rateLimit: "db/threads/insert",
+    });
 
     this.queryCache.delete("all_watched_threads");
     this.queryCache.delete(`threads_${server}`);
@@ -528,15 +571,15 @@ export default class mysql implements Database {
 
         return new Promise<boolean>((resolve) => {
           mysqlDump.stderr.on("data", (data) => {
-            this.logger.error(`mysqldump error: ${data}`);
+            logger.error(`mysqldump error: ${data}`);
           });
 
           mysqlDump.on("close", (code) => {
             if (code === 0) {
-              this.logger.done(`MySQL Backup Created: ${filename}`);
+              logger.done(`MySQL Backup Created: ${filename}`);
               resolve(true);
             } else {
-              this.logger.error(`mysqldump failed with code ${code}`);
+              logger.error(`mysqldump failed with code ${code}`);
               resolve(false);
             }
           });
@@ -559,27 +602,31 @@ export default class mysql implements Database {
   }
 
   /**
-   * Get all watched threads with stronger typing
+   * Get all watched threads from the database
    */
   async getAllWatchedThreads(): Promise<ThreadData[]> {
-    const sql =
-      this.preparedStatements.get("getAllThreads") ||
-      "SELECT id, server, dueArchive, watching FROM threads WHERE watching = 1";
+    await this.waitForReady();
 
-    const res = await this.query<ThreadRow[]>(sql, [], {
+    const query = `
+      SELECT id, dueArchive, server, watching
+      FROM threads
+      WHERE watching = 1
+    `;
+
+    const rows = await this.query<ThreadRow[]>(query, [], {
       useCache: true,
       cacheKey: "all_watched_threads",
       rateLimit: "db/threads/getAll",
     });
 
-    if (!res) {
+    if (!rows) {
       return [];
     }
 
-    return res.map((row: ThreadRow) => ({
+    return rows.map((row) => ({
       id: row.id,
-      server: row.server,
       dueArchive: Number(row.dueArchive),
+      server: row.server,
       watching: Boolean(row.watching),
     }));
   }
@@ -591,19 +638,121 @@ export default class mysql implements Database {
     this.queryCache.clear();
 
     if (!this.connection) {
-      this.logger.debug("No active database connection to close");
+      logger.debug("No active database connection to close");
       return;
     }
 
     await new Promise<void>((resolve, reject) => {
       this.connection.end((err) => {
         if (err) {
-          this.logger.error(`Error closing database connection: ${String(err)}`);
+          logger.error(`Error closing database connection: ${String(err)}`);
           return reject(err);
         }
-        this.logger.debug("Database connections closed successfully");
+        logger.debug("Database connections closed successfully");
         return resolve();
       });
     });
+  }
+
+  async updateThreadShardId(threadId: string, shardId: number): Promise<void> {
+    // Create a timeout that will be cleared on success
+    const clearTimeout = createDatabaseTimeout(
+      `updateShardId-${threadId}`,
+      10000, // 10 second timeout
+      () => {
+        logger.warn(`Timeout updating shard ID for thread ${threadId}`);
+      }
+    );
+
+    try {
+      // Fixed query: use 'id' instead of 'thread_id'
+      const query = "UPDATE threads SET shardId = ? WHERE id = ?";
+
+      // Use the query method instead of this.connection.execute
+      await this.query(query, [shardId, threadId], {
+        rateLimit: "db/threads/updateShardId",
+      });
+
+      // Operation succeeded, clear the timeout
+      clearTimeout();
+    } catch (error) {
+      logger.error(`Failed to update thread shard ID: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Check if a channel is being watched
+   */
+  async isChannelWatched(channelId: string, guildId: string): Promise<boolean> {
+    if (!channelId || !guildId) {
+      return false;
+    }
+
+    try {
+      const query = "SELECT COUNT(*) as count FROM channels WHERE id = ? AND server = ?";
+      const result = await this.query<{ count: number }[]>(query, [channelId, guildId], {
+        useCache: true,
+        cacheKey: `channel_watched_${channelId}_${guildId}`,
+        rateLimit: "db/channels/check",
+      });
+
+      return result && result.length > 0 && result[0].count > 0;
+    } catch (error) {
+      logger.warn(`Error checking if channel ${channelId} is watched: ${error}`);
+      return false;
+    }
+  }
+
+  async updateThreadShardIds(threadIds: string[], shardId: number): Promise<void> {
+    // Skip if no threads to update
+    if (!threadIds.length) return;
+
+    // Generate a process-specific timeout key
+    const timeoutKey = "shardId_update";
+
+    // Create a timeout to detect if the operation hangs
+    const clearTimeout = createDatabaseTimeout(
+      timeoutKey,
+      30000, // 30 seconds timeout
+      () => {
+        logger.debug("[DB] Timed out waiting for MySQL thread shardId update");
+      }
+    );
+
+    try {
+      await this.waitForReady();
+
+      // Log beginning of update process
+      logger.debug(`Updating shard IDs for ${threadIds.length} threads (MySQL)`);
+
+      // MySQL supports parameterized IN clauses with a different syntax than SQLite
+      // Build placeholders for the IN clause
+      const placeholders = threadIds.map(() => "?").join(",");
+
+      const query = `UPDATE threads SET shardId = ? WHERE id IN (${placeholders})`;
+
+      await this.query(query, [shardId, ...threadIds], {
+        rateLimit: "db/threads/updateShardIds",
+      });
+
+      // Log success of update
+      logger.debug(`Successfully updated shard IDs for ${threadIds.length} threads (MySQL)`);
+
+      // Clear the timeout since operation was successful
+      clearTimeout();
+
+      // Also clear any timeout that might have been created by populateMissingShardIds
+      // This ensures we don't get duplicate timeout messages
+      clearDatabaseTimeout(timeoutKey);
+
+      // Update the cache to reflect the changes
+      this.queryCache.delete("all_watched_threads");
+    } catch (error) {
+      // Operation failed, clear the timeout and rethrow
+      clearTimeout();
+      logger.error(`Failed to update thread shardIds in MySQL: ${error}`);
+      throw error;
+    }
   }
 }

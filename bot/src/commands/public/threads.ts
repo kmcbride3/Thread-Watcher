@@ -1,7 +1,11 @@
-import { ChatInputCommandInteraction, MessageFlagsBitField, SlashCommandBuilder } from "discord.js";
-import { Command, statusType } from "../../interfaces/command";
+import {
+  ChatInputCommandInteraction,
+  codeBlock,
+  MessageFlagsBitField,
+  SlashCommandBuilder,
+} from "discord.js";
+import { Command } from "../../interfaces/command";
 import { handleCommandError } from "../../utilities/errorSystem";
-import { formatCodeBlock } from "../../utilities/formatUtils";
 import { rateLimitManager } from "../../utilities/rateLimitManager";
 
 const threadsCommand: Command = {
@@ -13,12 +17,12 @@ const threadsCommand: Command = {
       // Respond with ephemeral message for the redirect notice
       await interaction.reply({
         embeds: [
-          buildBaseEmbed("Command Moved", statusType.info, {
-            description: `The ${formatCodeBlock("/threads", "fix")} command has been moved to ${formatCodeBlock("/list", "fix")}`,
+          buildBaseEmbed("Command Moved", "info", {
+            description: `The ${codeBlock("/threads", "fix")} command has been moved to ${codeBlock("/list", "fix")}`,
             fields: [
               {
                 name: "How to use the new command",
-                value: `Try using ${formatCodeBlock("/list show:threads", "bash")} to see your watched threads`,
+                value: `Try using ${codeBlock("/list show:threads", "bash")} to see your watched threads`,
               },
             ],
           }),

@@ -1,14 +1,60 @@
 import { ChatInputCommandInteraction, MessageFlagsBitField, SlashCommandBuilder } from "discord.js";
-import { commands } from "../../bot";
+import { getCommands } from "../../bot";
 import { getShardManager } from "../../index";
-import { Command, statusType } from "../../interfaces/command";
+import { Command } from "../../interfaces/command";
 import { ErrorSeverity, handleApiError, handleCommandError } from "../../utilities/errorSystem";
 import loadCommands from "../../utilities/loadCommands";
+import { logger, StatusType } from "../../utilities/logger";
 import { rateLimitManager } from "../../utilities/rateLimitManager";
 import reloadCommands from "../../utilities/routines/reloadCommands";
 
+const commands = getCommands();
+
+/**
+ * Safely clear command module cache with proper security checks
+ */
+function safelyClearCommandCache(): string[] {
+  const commandPattern = /[/\\]commands[/\\]/;
+  const cleared: string[] = [];
+
+  try {
+    // Get all cache keys first
+    const keys = Object.keys(require.cache);
+
+    // Filter to only include command modules
+    const commandModuleKeys = keys.filter((key) => {
+      // Basic path validation
+      if (!key.startsWith("/") || !commandPattern.test(key)) {
+        return false;
+      }
+      // Extra validation: must be a .js or .ts file in our project
+      return /\.(js|ts)$/.test(key) && key.includes("/home/kevin/code/thread-watcher/");
+    });
+
+    // Clear the matching modules
+    for (const key of commandModuleKeys) {
+      try {
+        if (Object.hasOwn(require.cache, key)) {
+          const deleted = Reflect.deleteProperty(require.cache, key);
+          if (deleted) {
+            cleared.push(key);
+          }
+        }
+      } catch (err) {
+        logger.warn(`Failed to clear module ${key} from cache: ${err}`);
+      }
+    }
+
+    logger.debug(`Cleared ${cleared.length} command modules from cache`);
+    return cleared;
+  } catch (error) {
+    logger.error(`Error clearing command module cache: ${error}`);
+    return [];
+  }
+}
+
 const reloadCommand: Command = {
-  run: async (interaction: ChatInputCommandInteraction, buildBaseEmbed): Promise<void> => {
+  run: async (interaction: ChatInputCommandInteraction, buildBaseEmbed) => {
     try {
       // Always immediately defer this command since it can take time
       await interaction.deferReply({
@@ -25,7 +71,7 @@ const reloadCommand: Command = {
         if (!shardManager) {
           await interaction.editReply({
             embeds: [
-              buildBaseEmbed("Global Reload Failed", statusType.error, {
+              buildBaseEmbed("Global Reload Failed", "error" as StatusType, {
                 description: "Shard manager is not accessible. Try reloading locally instead.",
               }),
             ],
@@ -56,7 +102,7 @@ const reloadCommand: Command = {
 
         await interaction.editReply({
           embeds: [
-            buildBaseEmbed("Commands Reloaded Globally", statusType.success, {
+            buildBaseEmbed("Commands Reloaded Globally", "success" as StatusType, {
               description: "All commands have been reloaded across all shards.",
             }),
           ],
@@ -65,11 +111,7 @@ const reloadCommand: Command = {
         const result = await handleApiError(
           "Failed to reload commands",
           async () => {
-            Object.keys(require.cache).forEach((key) => {
-              if (key.includes("/commands/")) {
-                Reflect.deleteProperty(require.cache, key);
-              }
-            });
+            safelyClearCommandCache();
 
             const loadedCommands = await loadCommands();
 
@@ -95,7 +137,7 @@ const reloadCommand: Command = {
 
         await interaction.editReply({
           embeds: [
-            buildBaseEmbed("Commands Reloaded", statusType.success, {
+            buildBaseEmbed("Commands Reloaded", "success" as StatusType, {
               description: "All commands have been reloaded on this shard.",
               fields: [
                 { name: "Command Count", value: `${result.newCount} commands loaded` },

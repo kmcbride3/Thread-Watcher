@@ -1,9 +1,14 @@
 import { Events, ThreadChannel } from "discord.js";
-import { db, logger } from "../index";
+import { logger } from "../index";
+import { SERVICE_KEYS, serviceRegistry } from "../services";
 import { ErrorSeverity, handleApiError } from "../utilities/errorSystem";
 import { rateLimitManager } from "../utilities/rateLimitManager";
-import { addThread, dueArchiveTimestamp } from "../utilities/threadActions";
-import { isThreadChannel, threadShouldBeWatched } from "../utilities/threadUtils";
+import { threadManager } from "../utilities/threadManager";
+import {
+  dueArchiveTimestamp,
+  isThreadChannel,
+  threadShouldBeWatched,
+} from "../utilities/threadUtils";
 
 export default {
   name: Events.ThreadCreate,
@@ -19,7 +24,20 @@ export default {
     try {
       await rateLimitManager.waitForRateLimit(`guilds/${thread.guildId}/threads`);
 
-      const getChannels = async () => await db.getChannels(thread.guildId);
+      const getChannels = async () => {
+        // Get the database with safer access pattern
+        if (!serviceRegistry.isAvailable(SERVICE_KEYS.DATABASE)) {
+          logger.warn(`Database not available for thread creation handling: ${thread.id}`);
+          return [];
+        }
+
+        const db = serviceRegistry.get(SERVICE_KEYS.DATABASE, {
+          errorContext: `ThreadCreate:getDatabase(${thread.guildId})`,
+        });
+
+        return await db.getChannels(thread.guildId);
+      };
+
       const channels = await handleApiError(null, getChannels, {
         retries: 2,
         retryDelay: 1000,
@@ -44,15 +62,22 @@ export default {
       if (shouldWatch) {
         logger.info(`Automatically adding thread "${thread.id}" in ${thread.guildId}`);
 
+        // Use ThreadManager directly for consistency
         await handleApiError(
           null,
           async () => {
-            await addThread(
+            const dueArchive = dueArchiveTimestamp(thread.autoArchiveDuration || 0) as number;
+
+            // Use threadManager directly instead of addThread
+            const success = await threadManager.addThreadToWatch(
               thread.id,
-              dueArchiveTimestamp(thread.autoArchiveDuration || 0) as number,
+              dueArchive,
               thread.guildId
             );
-            logger.done(`Thread "${thread.id}" added successfully in ${thread.guildId}`);
+
+            if (success) {
+              logger.done(`Thread "${thread.id}" added successfully in ${thread.guildId}`);
+            }
           },
           {
             retries: 2,

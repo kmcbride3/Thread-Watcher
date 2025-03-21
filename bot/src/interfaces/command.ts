@@ -8,13 +8,6 @@ import {
 } from "discord.js";
 import { EmbedBuilderFunction, EmbedBuilderOptions } from "../utilities/embedUtils";
 
-export enum statusType {
-  error = "error",
-  success = "success",
-  info = "info",
-  warning = "warning",
-}
-
 export interface builderField<T = unknown> {
   name: string;
   value: T | string;

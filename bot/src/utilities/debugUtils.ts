@@ -1,60 +1,63 @@
 /**
- * Debug utilities for tracking initialization issues
+ * Debug utilities for tracking initialization issues and memory tracking
  */
 
-import fs from "fs";
-import path from "path";
+import { logger, logToFile } from "./logger";
 
-// Timestamp format helper
-const getTimestamp = (): string => {
-  return new Date().toISOString();
-};
+// Initialize debug state tracking
+const initLog: string[] = [];
+const startTime = Date.now();
 
-// Utility function to conditionally execute functions based on log level
-const executeIfTrace = (fn: () => void): void => {
-  if (process.env.LOG_LEVEL === "Trace") {
-    fn();
+// Define log filenames - will use the same directory as the main logs
+const INIT_LOG_FILE = "initialization.log";
+const MEMORY_LOG_FILE = "memory-usage.log";
+
+/**
+ * Track initialization state for debugging startup issues
+ */
+export function trackInitState(message: string): void {
+  const timestamp = Date.now();
+  const timeFromStart = timestamp - startTime;
+  const logEntry = `[${timeFromStart}ms] ${message}`;
+
+  // Add to in-memory buffer
+  initLog.push(logEntry);
+
+  // Log to main log with INIT context
+  logger.debug(message, "INIT");
+
+  // Log to init-specific log file with timestamp but no additional context
+  logToFile(logEntry, INIT_LOG_FILE);
+}
+
+/**
+ * Write full initialization log to disk
+ * Only needed on exit now as we're writing entries continuously
+ */
+function writeFullInitLog(): void {
+  try {
+    // Build the full log content
+    const fullLog = initLog.join("\n");
+
+    // Use the log function with custom file path
+    logger.debug(fullLog, undefined, INIT_LOG_FILE);
+  } catch (err) {
+    console.error("Failed to write initialization log:", err);
   }
-};
+}
 
-// Save initialization state to a file for debugging
-export const trackInitState = (state: string): void => {
-  executeIfTrace(() => {
-    try {
-      const debugDir = path.join(process.cwd(), "data");
-      if (!fs.existsSync(debugDir)) {
-        fs.mkdirSync(debugDir, { recursive: true });
-      }
+/**
+ * Log memory usage statistics for debugging memory leaks
+ */
+export function logMemoryUsage(): void {
+  const memUsage = process.memoryUsage();
+  const memoryMessage = `RSS: ${Math.round(memUsage.rss / 1024 / 1024)}MB, Heap: ${Math.round(memUsage.heapUsed / 1024 / 1024)}/${Math.round(memUsage.heapTotal / 1024 / 1024)}MB`;
 
-      const logFile = path.join(debugDir, "init-debug.log");
-      const logMessage = `${getTimestamp()} - PID ${process.pid} - ${state} - ENV:${JSON.stringify({
-        IS_SHARD: process.env.IS_SHARD,
-        NODE_ENV: process.env.NODE_ENV,
-      })}\n`;
+  // Log to memory-specific log without additional context
+  logToFile(memoryMessage, MEMORY_LOG_FILE);
+}
 
-      fs.appendFileSync(logFile, logMessage);
-    } catch (err) {
-      console.error("Failed to write debug log:", err);
-    }
-  });
-};
-
-// Track memory usage
-export const logMemoryUsage = (): void => {
-  executeIfTrace(() => {
-    try {
-      const used = process.memoryUsage();
-      const debugDir = path.join(process.cwd(), "data");
-      if (!fs.existsSync(debugDir)) {
-        fs.mkdirSync(debugDir, { recursive: true });
-      }
-
-      const logFile = path.join(debugDir, "memory-usage.log");
-      const logMessage = `${getTimestamp()} - PID ${process.pid} - RSS: ${Math.round(used.rss / 1024 / 1024)}MB, Heap: ${Math.round(used.heapUsed / 1024 / 1024)}MB/${Math.round(used.heapTotal / 1024 / 1024)}MB\n`;
-
-      fs.appendFileSync(logFile, logMessage);
-    } catch (err) {
-      console.error("Failed to log memory usage:", err);
-    }
-  });
-};
+// Write init log on process exit
+process.on("exit", () => {
+  writeFullInitLog();
+});

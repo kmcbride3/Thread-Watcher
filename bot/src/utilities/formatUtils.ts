@@ -1,30 +1,79 @@
 import {
   channelMention,
-  codeBlock,
-  hyperlink,
-  inlineCode,
+  ThreadAutoArchiveDuration,
   time,
   TimestampStyles,
   userMention,
 } from "discord.js";
-import { inspect } from "util";
+
+/**
+ * Padding utility to ensure consistent width for status labels
+ * @param input The input string to pad
+ * @param length The target length
+ * @returns The padded string
+ */
+export function padRight(input: string, length = 5): string {
+  return input.padEnd(length, " ");
+}
+
+/**
+ * Format a number with commas as thousand separators
+ * @param num The number to format
+ * @returns Formatted string with commas
+ */
+export function formatNumber(num: number): string {
+  return new Intl.NumberFormat("en-US").format(num);
+}
+
+/**
+ * Format a duration in milliseconds to a human-readable string
+ * @param ms Duration in milliseconds
+ * @param compact Whether to use compact formatting
+ * @returns Human-readable duration
+ */
+export function formatDuration(ms: number, compact = false): string {
+  const duration = ms < 0 ? 0 : ms;
+
+  const seconds = Math.floor((duration / 1000) % 60);
+  const minutes = Math.floor((duration / (1000 * 60)) % 60);
+  const hours = Math.floor((duration / (1000 * 60 * 60)) % 24);
+  const days = Math.floor(duration / (1000 * 60 * 60 * 24));
+
+  if (compact) {
+    const parts = [];
+    if (days > 0) parts.push(`${days}d`);
+    if (hours > 0) parts.push(`${hours}h`);
+    if (minutes > 0) parts.push(`${minutes}m`);
+    if (seconds > 0 || parts.length === 0) parts.push(`${seconds}s`);
+    return parts.join(" ");
+  }
+
+  const parts = [];
+  if (days > 0) parts.push(`${days} day${days !== 1 ? "s" : ""}`);
+  if (hours > 0) parts.push(`${hours} hour${hours !== 1 ? "s" : ""}`);
+  if (minutes > 0) parts.push(`${minutes} minute${minutes !== 1 ? "s" : ""}`);
+  if (seconds > 0 || parts.length === 0) parts.push(`${seconds} second${seconds !== 1 ? "s" : ""}`);
+
+  return parts.join(", ");
+}
 
 /**
  * Format archive duration in minutes to a human-readable string
- * @param minutes Duration in minutes
+ * @param duration Duration in minutes
  * @returns Human-readable duration string
  */
-export function formatArchiveDuration(minutes: number): string {
+export function formatArchiveDuration(duration: ThreadAutoArchiveDuration): string {
   // Standard Discord thread auto-archive durations
-  if (minutes === 60) return "1 hour";
-  if (minutes === 1440) return "24 hours";
-  if (minutes === 4320) return "3 days";
-  if (minutes === 10080) return "1 week";
+  if (duration === ThreadAutoArchiveDuration.OneHour) return "1 hour";
+  if (duration === ThreadAutoArchiveDuration.OneDay) return "1 day";
+  if (duration === ThreadAutoArchiveDuration.ThreeDays) return "3 days";
+  if (duration === ThreadAutoArchiveDuration.OneWeek) return "1 week";
 
   // Handle custom values
-  if (minutes < 60) return `${minutes} minutes`;
-  if (minutes < 1440) return `${Math.floor(minutes / 60)} hours`;
-  return `${Math.floor(minutes / 1440)} days`;
+  if (duration < ThreadAutoArchiveDuration.OneHour) return `${duration} minutes`;
+  if (duration < ThreadAutoArchiveDuration.OneDay)
+    return `${Math.floor(duration / ThreadAutoArchiveDuration.OneDay)} hours`;
+  return `${Math.floor(duration / ThreadAutoArchiveDuration.OneDay)} days`;
 }
 
 /**
@@ -187,38 +236,6 @@ export function truncate(text: string, maxLength: number, ellipsis = "..."): str
 }
 
 /**
- * Format a duration in milliseconds to a human-readable string
- * @param ms Duration in milliseconds
- * @param compact Whether to use compact formatting
- * @returns Human-readable duration
- */
-export function formatDuration(ms: number, compact = false): string {
-  const duration = ms < 0 ? 0 : ms;
-
-  const seconds = Math.floor((duration / 1000) % 60);
-  const minutes = Math.floor((duration / (1000 * 60)) % 60);
-  const hours = Math.floor((duration / (1000 * 60 * 60)) % 24);
-  const days = Math.floor(duration / (1000 * 60 * 60 * 24));
-
-  if (compact) {
-    const parts = [];
-    if (days > 0) parts.push(`${days}d`);
-    if (hours > 0) parts.push(`${hours}h`);
-    if (minutes > 0) parts.push(`${minutes}m`);
-    if (seconds > 0 || parts.length === 0) parts.push(`${seconds}s`);
-    return parts.join(" ");
-  }
-
-  const parts = [];
-  if (days > 0) parts.push(`${days} day${days !== 1 ? "s" : ""}`);
-  if (hours > 0) parts.push(`${hours} hour${hours !== 1 ? "s" : ""}`);
-  if (minutes > 0) parts.push(`${minutes} minute${minutes !== 1 ? "s" : ""}`);
-  if (seconds > 0 || parts.length === 0) parts.push(`${seconds} second${seconds !== 1 ? "s" : ""}`);
-
-  return parts.join(", ");
-}
-
-/**
  * Format a user mention with display name if available
  * @param userId User ID to format
  * @param username Optional username to display
@@ -243,44 +260,31 @@ export function formatChannelMention(channelId: string, channelName?: string): s
 }
 
 /**
- * Format a code block with syntax highlighting
- * @param content Content to format as code
- * @param language Language for syntax highlighting
- * @returns Formatted code block
+ * Format a timestamp to a human-readable date string
+ * @param timestamp Unix timestamp in seconds
+ * @returns Formatted date string
  */
-export function formatCodeBlock(content: string, language = ""): string {
-  // Use discord.js's built-in codeBlock utility
-  return codeBlock(language, content);
+export function formatTimestamp(timestamp: number): string {
+  // Convert seconds to milliseconds if needed
+  const ms = timestamp > 9999999999 ? timestamp : timestamp * 1000;
+  const date = new Date(ms);
+
+  return date.toLocaleString("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZoneName: "short",
+  });
 }
 
 /**
- * Format text as inline code
- * @param content Content to format as inline code
- * @returns Formatted inline code
+ * Format a Unix timestamp as both human-readable and Discord timestamp
+ * Useful for debug logs where you want both formats
+ * @param timestamp Unix timestamp in seconds
+ * @returns String with both human-readable and Discord timestamp formats
  */
-export function formatInlineCode(content: string): string {
-  // Use discord.js's built-in inlineCode utility
-  return inlineCode(content);
-}
-
-/**
- * Create a hyperlink with an optional title
- * @param url The URL to link to
- * @param title Optional title for the link
- * @returns Formatted markdown hyperlink
- */
-export function formatLink(url: string, title?: string): string {
-  // Use discord.js's built-in hyperlink utility
-  return hyperlink(title || url, url);
-}
-
-/**
- * Format an object for display (useful for debugging)
- * @param obj The object to inspect
- * @param options Options for formatting
- * @returns Formatted string representation of the object
- */
-export function formatObject(obj: unknown, options = { depth: 2, colors: false }): string {
-  // Use Node.js built-in util.inspect
-  return inspect(obj, options);
+export function formatDebugTimestamp(timestamp: number): string {
+  return `${formatTimestamp(timestamp)} (<t:${Math.floor(timestamp)}:f>)`;
 }

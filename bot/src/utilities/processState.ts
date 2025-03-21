@@ -2,6 +2,8 @@
  * Process state tracking for master/shard differentiation
  */
 
+import { safeLog } from "./logger";
+
 // Track process roles and initialization state
 export enum ProcessRole {
   MAIN = "main",
@@ -20,11 +22,58 @@ export const processState: ProcessState = {
   isInitialized: false,
 };
 
+// Avoid redundant environment logging
+let processEnvironmentLogged = false;
+let processTypeChecked = false;
+let lastProcessResult: boolean | null = null;
+
+// Cache for process context to avoid repeated determinations
+let processContextCache: string | null = null;
+
 /**
  * Determine if the current process is a shard
  * @returns boolean indicating if the current process is a shard
  */
 export function isShard(): boolean {
+  // Cache the result to avoid repeated checks and logs
+  if (processTypeChecked) {
+    return lastProcessResult === true;
+  }
+
+  const result = _checkIfShard();
+  lastProcessResult = result;
+  processTypeChecked = true;
+
+  // Set shardId in processState if we are a shard
+  if (result) {
+    processState.role = ProcessRole.SHARD;
+    // Try to get shard ID from environment or command line
+    const shardId = getShardId();
+    if (shardId >= 0) {
+      processState.shardId = shardId;
+    }
+  } else {
+    processState.role = ProcessRole.MAIN;
+  }
+
+  if (!processEnvironmentLogged) {
+    // Use an immediate trace-level logging instead of console.log
+    try {
+      safeLog("trace", `Process type: ${result ? "shard" : "main"}`, "PROCESS");
+    } catch {
+      // Silent fail if logger not available
+    }
+
+    processEnvironmentLogged = true;
+  }
+
+  return result;
+}
+
+/**
+ * Internal check for shard status without logging
+ */
+function _checkIfShard(): boolean {
   // Check for the environment variable first (most reliable)
   if (process.env.IS_SHARD === "true") {
     return true;
@@ -43,7 +92,6 @@ export function isShard(): boolean {
   }
 
   // Check if this process was spawned by a sharding manager
-  // This might be unreliable but adds an extra check
   return Boolean(typeof process.send === "function");
 }
 
@@ -76,7 +124,15 @@ export function getShardId(): number {
  * Helper to determine if this process is the main process
  */
 export const isMainProcess = (): boolean => {
-  return processState.role === ProcessRole.MAIN;
+  const result = !isShard();
+
+  // Use trace-level diagnostics instead of console.log
+  try {
+    safeLog("trace", `Process role check: ${result ? "main" : "shard"}`, "PROCESS");
+  } catch {
+    // Silent fail if logger not available
+  }
+  return result;
 };
 
 /**
@@ -99,4 +155,35 @@ export function setupMinimalSignalHandlers(): void {
 
     // For main process, ShutdownManager will handle signals
   }
+}
+
+/**
+ * Get the appropriate process context for logging
+ * @returns "MAIN" or "SHARD <id>" based on process type, or "undefined" if unknown
+ */
+export function getProcessContext(): string | undefined {
+  // Use cached value if available
+  if (processContextCache) {
+    return processContextCache;
+  }
+
+  // Determine process context based on role
+  switch (processState.role) {
+    case ProcessRole.MAIN: {
+      processContextCache = "MAIN";
+      break;
+    }
+    case ProcessRole.SHARD: {
+      const shardId = processState.shardId !== undefined ? processState.shardId : getShardId();
+      processContextCache = `SHARD ${shardId}`;
+      break;
+    }
+    case ProcessRole.UNKNOWN:
+    default: {
+      processContextCache = null;
+      break;
+    }
+  }
+
+  return processContextCache || undefined;
 }

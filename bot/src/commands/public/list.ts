@@ -14,10 +14,14 @@ import {
   SlashCommandBuilder,
 } from "discord.js";
 import TwButton from "../../components/Button";
-import { config, db } from "../../index";
+import { config, logger } from "../../index";
 import { Command } from "../../interfaces/command";
+import { SERVICE_KEYS, serviceRegistry } from "../../services";
 import Chunkable from "../../utilities/Chunkable";
 import { handleApiError, handleCommandError } from "../../utilities/errorSystem";
+import { formatNumber } from "../../utilities/formatUtils";
+import { rateLimitManager } from "../../utilities/rateLimitManager";
+import { threadManager } from "../../utilities/threadManager";
 import {
   getDirectTag,
   isThreadCapableChannel,
@@ -100,6 +104,18 @@ const getChannels = async (interaction: ChatInputCommandInteraction) => {
     "Failed to get channel data",
     async () => {
       const returnValues: I_DataResponse = { okValues: [], failValues: [] };
+
+      // Check if database is available
+      if (!serviceRegistry.isAvailable(SERVICE_KEYS.DATABASE)) {
+        logger.warn("Database service not available for listing channels");
+        return returnValues;
+      }
+
+      // Get database with proper error handling
+      const db = serviceRegistry.get(SERVICE_KEYS.DATABASE, {
+        errorContext: `List Command - Channel Data for ${interaction.guildId}`,
+      });
+
       const channels = await db.getChannels(interaction.guildId as string);
 
       for (const channelData of channels) {
@@ -161,18 +177,34 @@ const getThreads = async (interaction: ChatInputCommandInteraction) => {
     async () => {
       const returnValues: I_DataResponse = { okValues: [], failValues: [] };
 
-      const threads = await db.getThreads(interaction.guildId as string);
+      // Wait for any potential rate limits before fetching threads
+      await rateLimitManager.waitForRateLimit("db/threads/get");
 
-      for (const _t of threads) {
+      if (!interaction.guildId) {
+        logger.debug("No guildId available for thread listing");
+        return returnValues;
+      }
+
+      // Use threadManager's getThreadsForServer method for consistent filtering
+      const threads = threadManager.getThreadsForServer(interaction.guildId);
+
+      // Log to help diagnose issues
+      logger.debug(`Found ${threads.size} threads for server ${interaction.guildId} in memory`);
+
+      // Process the threads from memory
+      for (const [threadId, threadData] of threads.entries()) {
         try {
-          const thread = await interaction.client.channels.fetch(_t.id).catch(() => null);
+          // Wait for potential rate limit before fetching each channel
+          await rateLimitManager.waitForRateLimit(`channels/${threadId}`);
+
+          const thread = await interaction.client.channels.fetch(threadId).catch(() => null);
           if (thread) {
             if (
               !THREAD_CHANNEL_TYPES.includes(thread.type as (typeof THREAD_CHANNEL_TYPES)[number])
             )
               continue;
             if (!interaction.memberPermissions?.has(PermissionFlagsBits.ViewChannel)) continue;
-            if (!_t.watching) continue;
+            if (!threadData.watching) continue; // Double check watching status
 
             if ("guild" in thread) {
               if (isThreadChannel(thread)) {
@@ -184,17 +216,23 @@ const getThreads = async (interaction: ChatInputCommandInteraction) => {
             }
           } else {
             returnValues.failValues.push({
-              text: `${_t.id} (*unknown thread*)`,
-              id: _t.id,
+              text: `${threadId} (*unknown thread*)`,
+              id: threadId,
             });
           }
-        } catch {
+        } catch (err) {
+          logger.debug(`Error processing thread ${threadId}: ${err}`);
           returnValues.failValues.push({
-            text: `${_t.id} (*error fetching thread*)`,
-            id: _t.id,
+            text: `${threadId} (*error fetching thread*)`,
+            id: threadId,
           });
         }
       }
+
+      // Log the counts for debugging
+      logger.debug(
+        `List command found ${returnValues.okValues.length} valid threads and ${returnValues.failValues.length} invalid threads`
+      );
 
       return returnValues;
     },
@@ -209,8 +247,8 @@ const listCommand: Command = {
     let showVar = "";
     try {
       let pub = interaction.options.getBoolean("public");
-      const show = interaction.options.getString("show") || "thread";
-      showVar = show;
+      const show = interaction.options.getString("show");
+      showVar = show || "both"; // Default to "both" when no option is selected
 
       if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageThreads) && pub)
         pub = false;
@@ -219,21 +257,62 @@ const listCommand: Command = {
         flags: pub ? [] : [MessageFlagsBitField.Flags.Ephemeral],
       });
 
-      const res =
-        show === "channel"
-          ? await getChannels(interaction)
-          : ((await getThreads(interaction)) as I_DataResponse);
+      // Handle the case when no option is selected - fetch both threads and channels
+      let channelData: I_DataResponse = { okValues: [], failValues: [] };
+      let threadData: I_DataResponse = { okValues: [], failValues: [] };
 
-      const fields = fitIntoFields(show, [
-        ...res.okValues.map((v) => v.text),
-        ...res.failValues.map((v) => v.text),
-      ]).fieldArr;
+      if (showVar === "both") {
+        // Fetch both types of data
+        channelData = await getChannels(interaction);
+        threadData = await getThreads(interaction);
+      } else {
+        // Fetch only the requested type
+        const res =
+          showVar === "channel" ? await getChannels(interaction) : await getThreads(interaction);
 
-      if (fields.length === 0 || (fields.length === 1 && fields[0].value === "")) {
+        if (showVar === "channel") {
+          channelData = res;
+        } else {
+          threadData = res;
+        }
+      }
+
+      // Create fields for both types if needed
+      const fields: field[] = [];
+
+      // Add thread fields if we have thread data
+      if (
+        (showVar === "thread" || showVar === "both") &&
+        threadData.okValues.length + threadData.failValues.length > 0
+      ) {
+        const threadCount = formatNumber(threadData.okValues.length + threadData.failValues.length);
+        const threadFields = fitIntoFields(`Threads (${threadCount})`, [
+          ...threadData.okValues.map((v) => v.text),
+          ...threadData.failValues.map((v) => v.text),
+        ]).fieldArr;
+        fields.push(...threadFields);
+      }
+
+      // Add channel fields if we have channel data
+      if (
+        (showVar === "channel" || showVar === "both") &&
+        channelData.okValues.length + channelData.failValues.length > 0
+      ) {
+        const channelCount = formatNumber(
+          channelData.okValues.length + channelData.failValues.length
+        );
+        const channelFields = fitIntoFields(`Channels (${channelCount})`, [
+          ...channelData.okValues.map((v) => v.text),
+          ...channelData.failValues.map((v) => v.text),
+        ]).fieldArr;
+        fields.push(...channelFields);
+      }
+
+      if (fields.length === 0) {
         const nothingEmbed = new EmbedBuilder()
-          .setColor(config.style.info.colour as ColorResolvable)
-          .setTitle(`No ${show}s found`)
-          .setDescription(`No ${show}s are being watched in this server.`);
+          .setColor(config?.style?.info?.color as ColorResolvable)
+          .setTitle(`No watched content found`)
+          .setDescription(`No threads or channels are being watched in this server.`);
 
         await interaction.editReply({ embeds: [nothingEmbed] });
         return;
@@ -241,7 +320,7 @@ const listCommand: Command = {
 
       chunks = Chunkable.from(fields, 5);
       display = (btnInteraction?: ButtonInteraction) => {
-        const embed = new EmbedBuilder().setColor(config.style.success.colour as ColorResolvable);
+        const embed = new EmbedBuilder().setColor(config?.style?.success?.color as ColorResolvable);
         const navComponents = new ActionRowBuilder<ButtonBuilder>();
         const filter = (i: Interaction) => i.user.id === interaction.user.id;
         const back = new TwButton("<", ButtonStyle.Primary, {
@@ -254,18 +333,31 @@ const listCommand: Command = {
         forwards.filter = filter;
         navComponents.addComponents(back.button, forwards.button);
         embed.setFields(chunks.current);
-        embed.setFooter({
-          text: `Page ${chunks.currentPointer + 1}/${chunks.pages}`,
-        });
-        embed.setTitle(`${showVar === "channel" ? "Channels" : "Threads"} being watched`);
+
+        // Only show pagination footer if there's more than one page
+        if (chunks.pages > 1) {
+          embed.setFooter({
+            text: `Page ${chunks.currentPointer + 1}/${chunks.pages}`,
+          });
+        }
+
+        // Update title based on what's being shown
+        if (showVar === "both") {
+          embed.setTitle(`Watched Threads and Channels`);
+        } else {
+          embed.setTitle(`${showVar === "channel" ? "Channels" : "Threads"} being watched`);
+        }
+
+        // Use the new method names for clarity
         forwards.onclick((i) => {
-          chunks.next();
+          chunks.nextPage();
           display(i);
         });
         back.onclick((i) => {
-          chunks.back();
+          chunks.previousPage();
           display(i);
         });
+
         const options = {
           embeds: [embed],
           components: chunks.pages > 1 ? [navComponents] : [],
@@ -284,7 +376,7 @@ const listCommand: Command = {
         error,
         (title, status, options) => {
           const embed = new EmbedBuilder()
-            .setColor(config.style.error.colour as ColorResolvable)
+            .setColor(config?.style?.error?.color as ColorResolvable)
             .setTitle(title);
 
           if (options?.description) {
@@ -318,6 +410,7 @@ const listCommand: Command = {
         .setName("show")
         .setDescription("Do you want to view watched threads or channels?")
         .addChoices({ name: "threads", value: "thread" }, { name: "channels", value: "channel" })
+        .setRequired(false)
     ),
 };
 

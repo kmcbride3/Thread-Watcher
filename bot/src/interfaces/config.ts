@@ -1,6 +1,6 @@
 export interface ConfigValue {
-  validate: (value: unknown) => boolean;
-  matchKeys: string[];
-  default?: unknown;
+  validate: (value: string | boolean | null | undefined, key?: string) => boolean;
+  matchKeys: (string | RegExp)[];
+  default?: string | boolean | null | undefined;
   defaultOnInvalid?: boolean;
 }

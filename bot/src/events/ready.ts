@@ -1,10 +1,10 @@
-import { ActivityType, Client, Events } from "discord.js"
-import { threads } from "../bot"
-import { db, logger } from "../index"
-import { ThreadData } from "../interfaces/database"
-import { handleApiError } from "../utilities/apiErrorHandler"
-import { trackInitState } from "../utilities/debugUtils"
-import { bumpThreadsRoutine } from "../utilities/routines/ensureVisible"
+import { ActivityType, Client, Events } from "discord.js";
+import { logger } from "../index";
+import { ThreadData } from "../interfaces/database";
+import { SERVICE_KEYS, serviceRegistry } from "../services";
+import { handleApiError } from "../utilities/apiErrorHandler";
+import { trackInitState } from "../utilities/debugUtils";
+import { ensureVisibleThreads } from "../utilities/routines/threadMonitoring";
 
 export default {
   name: Events.ClientReady,
@@ -12,6 +12,18 @@ export default {
   execute(client: Client) {
     logger.debug(`Logged in as ${client.user?.tag} to Discord`);
     trackInitState("Bot ready");
+
+    if (
+      !serviceRegistry.isAvailable(SERVICE_KEYS.DATABASE) ||
+      !serviceRegistry.isAvailable(SERVICE_KEYS.THREAD_MANAGER)
+    ) {
+      logger.error("Required services not available for ready event");
+      return;
+    }
+
+    const db = serviceRegistry.get(SERVICE_KEYS.DATABASE);
+    const threadManager = serviceRegistry.get(SERVICE_KEYS.THREAD_MANAGER);
+    const threads = threadManager.getWatchedThreads();
 
     const promises: Promise<ThreadData[] | undefined>[] = [];
 
@@ -67,8 +79,8 @@ export default {
             logger.warn(String(result.reason));
           }
         });
-        bumpThreadsRoutine();
-        setInterval(bumpThreadsRoutine, 1000 * 60 * 50);
+        ensureVisibleThreads();
+        setInterval(ensureVisibleThreads, 1000 * 60 * 50);
       })
       .catch((e) => {
         logger.warn("[Ready] an unexpected error occurred");
