@@ -1,7 +1,7 @@
-import { REST, RequestMethod, RateLimitData } from "discord.js";
+import { REST, RateLimitData, RequestMethod } from "discord.js";
+import { logger } from "../index";
 import { getConfig } from "./cnf/index";
 import { rateLimitManager } from "./rateLimitManager";
-import { logger } from "../index";
 
 // Create a enhanced REST client for efficient API usage
 let restClient: REST | null = null;
@@ -21,8 +21,25 @@ export function getRestClient(): REST {
       globalRequestsPerSecond: 50,
       invalidRequestWarningInterval: 10,
       rejectOnRateLimit: (rateLimitData: RateLimitData) => {
-        logger.warn(`[REST] Rejecting request due to rate limit: ${JSON.stringify(rateLimitData)}`);
-        return true;
+        // Only log warning for significant rate limits
+        if (rateLimitData.timeToReset > 1000) {
+          logger.warn(
+            `[REST] Rate limit detected for route: ${rateLimitData.route}, reset in ${rateLimitData.timeToReset}ms`
+          );
+        }
+
+        // Only reject on global rate limits or very long timeouts
+        // This allows most rate limits to be handled by automatic retries
+        const shouldReject =
+          rateLimitData.global ||
+          rateLimitData.timeToReset > 5000 ||
+          rateLimitData.route.includes("/messages");
+
+        if (shouldReject) {
+          logger.warn(`[REST] Rejecting request due to rate limit: ${rateLimitData.route}`);
+        }
+
+        return shouldReject;
       },
     }).setToken(config.tokens.discord);
 
@@ -47,6 +64,9 @@ export async function safeRequest<T = unknown>(
   }
 ): Promise<T> {
   const rest = getRestClient();
+  const config = getConfig();
+  // Only check logLevel for determining debug level
+  const isDebugMode = config.logLevel && ["debug", "trace"].includes(config.logLevel);
 
   try {
     const response = await rest.request({
@@ -64,21 +84,47 @@ export async function safeRequest<T = unknown>(
 
     return response as T;
   } catch (error: unknown) {
-    // Pass headers to rateLimitManager
+    // Pass headers to rateLimitManager if available
     if (error && typeof error === "object" && "headers" in error) {
-      rateLimitManager.updateFromHeaders(route, error.headers as Record<string, string>);
+      try {
+        rateLimitManager.updateFromHeaders(route, error.headers as Record<string, string>);
+      } catch (rateLimitError) {
+        // Don't let rate limit manager errors prevent the original error from being thrown
+        logger.debug(`Error updating rate limit manager: ${rateLimitError}`);
+      }
     }
 
-    // Log meaningful error details
+    // Extract and log error details safely
     const errorObj = error as {
       message?: string;
       code?: string;
       status?: number;
+      method?: string;
+      url?: string;
     };
-    logger.error(`REST ${method} request to ${route} failed: ${errorObj.message || String(error)}`);
-    if (errorObj.code) logger.error(`Error code: ${errorObj.code}`);
-    if (errorObj.status) logger.error(`Status: ${errorObj.status}`);
 
+    // Create a more useful error message
+    const statusText = errorObj.status ? `[${errorObj.status}]` : "";
+    const codeText = errorObj.code ? `[${errorObj.code}]` : "";
+    const methodText = errorObj.method || method;
+    const urlText = errorObj.url || route;
+
+    // Always log the basic error info
+    logger.error(`REST ${methodText} request to ${urlText} failed ${statusText} ${codeText}`);
+
+    // Only log detailed information when in debug mode
+    if (isDebugMode) {
+      const errorMessage =
+        errorObj.message || (error instanceof Error ? error.message : String(error));
+      logger.error(`Error details: ${errorMessage}`);
+
+      // If we have a proper Error object with stack, log it in debug mode
+      if (error instanceof Error && error.stack) {
+        logger.debug(`Stack trace: ${error.stack}`);
+      }
+    }
+
+    // Rethrow the original error
     throw error;
   }
 }

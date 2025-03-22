@@ -2,46 +2,49 @@
 
 # Create base image with toolchain required to install dependencies
 FROM node:22-slim AS builder
-RUN apt-get update
 
-# Combine data directory and log file creation with strict permissions
-RUN mkdir -p /usr/src/bot/data && \
+# Setup environment in a single layer
+RUN apt-get update && \
+    mkdir -p /usr/src/bot/data && \
     touch /usr/src/bot/data/thread-watcher.log && \
     chmod 666 /usr/src/bot/data/thread-watcher.log && \
     touch /usr/src/bot/.commandshash && \
     chmod 666 /usr/src/bot/.commandshash && \
     chown -R 1000:1000 /usr/src/bot && \
-    chmod -R 775 /usr/src/bot
+    chmod -R 775 /usr/src/bot && \
+    corepack enable && \
+    corepack prepare yarn@4.7.0 --activate
 
 # Set working directory
 WORKDIR /usr/src/bot
 
-# Copy only the package/tsconfig files and the sample config file
+# Copy project files and install dependencies in one layer
 COPY ["package.json", "yarn.lock*", "tsconfig.json", "_config.json5", "/usr/src/bot/"]
+RUN yarn config set nodeLinker node-modules && \
+    yarn install && \
+    yarn cache clean
 
-# Install all dependencies (including devDependencies)
-RUN yarn install && yarn cache clean --force
-
-# Copy source code to build
+# Copy source, build, and prepare production files in one layer
 COPY ["./src/", "/usr/src/bot/src/"]
-
-# Run the build command which creates the production bundle
-RUN yarn run build
-
-# Remove devDependencies after build
-RUN yarn install --production --frozen-lockfile && yarn cache clean --force
+RUN yarn run build && \
+    yarn workspaces focus --production && \
+    yarn cache clean
 
 # Create production image without including the toolchain 
 FROM gcr.io/distroless/nodejs22-debian12 AS bot
 
-# Set NODE_ENV environment variable
-ENV NODE_ENV production
-
-# Set working directory
+# Set environment and working directory
+ENV NODE_ENV=production
 WORKDIR /usr/src/bot
 
-# Copy built node modules, binaries, config, commandshash file, and data directory in one command
-COPY --chown=1000:1000 --from=builder /usr/src/bot /usr/src/bot/ --chown=1000:1000 --from=builder /usr/src/bot/node_modules /usr/src/bot/node_modules/ --chown=1000:1000 --from=builder /usr/src/bot/dist /usr/src/bot/dist/ --chown=1000:1000 --from=builder /usr/src/bot/_config.json5 /usr/src/bot/_config.json5 --chown=1000:1000 --from=builder /usr/src/bot/.commandshash /usr/src/bot/.commandshash --chown=1000:1000 --from=builder /usr/src/bot/data /usr/src/bot/
+# Copy all necessary files in a single layer
+COPY --chown=1000:1000 --from=builder \
+     /usr/src/bot/node_modules \
+     /usr/src/bot/dist \
+     /usr/src/bot/_config.json5 \
+     /usr/src/bot/.commandshash \
+     /usr/src/bot/data \
+     /usr/src/bot/
 
 # Start the bot & register slash commands.
 CMD [ "./dist/index.js", "-reg_commands" ]

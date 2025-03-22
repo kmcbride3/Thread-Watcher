@@ -30,6 +30,15 @@ const searchShard = async() => {
         
         const res = await response.json();
         
+        // Validate the API response structure
+        const isValidResponse = validateApiResponse(res, {
+            found: 'boolean'
+        });
+        
+        if (!isValidResponse) {
+            throw new Error('Invalid API response format');
+        }
+        
         if(res && !res.found) {
             const message = document.createElement('div');
             message.textContent = 'That guild does not use Thread-Watcher. ';
@@ -44,6 +53,11 @@ const searchShard = async() => {
             errElement.innerHTML = '';
             errElement.appendChild(message);
             return null;
+        }
+        
+        // Validate shard property exists before using it
+        if (typeof res.shard !== 'number' && typeof res.shard !== 'string') {
+            throw new Error('Invalid shard property in API response');
         }
         
         showError(`Shard found! That guild is on shard ${res.shard}`, "success");
@@ -76,12 +90,25 @@ const safeLog = (level, message, data = null) => {
             if (typeof value === 'object' && value !== null) {
                 sanitized[key] = sanitizeObject(value);
             } else if (typeof value === 'string') {
-                sanitized[key] = value.length > 500 ? `${value.substring(0, 500)}...` : value;
+                // Truncate long strings for logging purposes
+                const truncated = value.length > 500 ? `${value.substring(0, 500)}...` : value;
+                // Escape HTML to prevent XSS if this data is ever displayed
+                sanitized[key] = escapeHtml(truncated);
             } else {
                 sanitized[key] = value;
             }
         }
         return sanitized;
+    };
+    
+    // Function to escape HTML special characters
+    const escapeHtml = (text) => {
+        return text
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
     };
     
     if (level === 'error') {
@@ -93,6 +120,21 @@ const safeLog = (level, message, data = null) => {
     } else {
         console.log(message, data ? sanitizeObject(data) : '');
     }
+};
+
+// Add API response validation helper
+const validateApiResponse = (response, schema) => {
+    if (!response) return false;
+    
+    for (const [key, type] of Object.entries(schema)) {
+        // Check if key exists
+        if (!(key in response)) return false;
+        
+        // Check type 
+        if (typeof response[key] !== type) return false;
+    }
+    
+    return true;
 };
 
 const handleIcons = () => {
@@ -121,6 +163,18 @@ const handleStats = async () => {
         
         const data = await response.json();
         if (!data) return null;
+
+        // Validate API response structure
+        const isValidStatsResponse = validateApiResponse(data, {
+            guildCount: 'number',
+            threads: 'number',
+            votes: 'number'
+        });
+        
+        if (!isValidStatsResponse) {
+            safeLog('error', 'Invalid stats API response format');
+            return null;
+        }
 
         if (data.error) {
             safeLog('error', 'Error fetching stats:', { error: data.error });
@@ -188,7 +242,12 @@ const handleStats = async () => {
             }
         }
     
-        populateTable()
+        // Validate shards array before using it
+        if (Array.isArray(data.shards)) {
+            populateTable();
+        } else {
+            safeLog('warn', 'No shards data available in API response');
+        }
     } catch (error) {
         safeLog('error', 'Failed to fetch stats:', { message: error.message });
     }

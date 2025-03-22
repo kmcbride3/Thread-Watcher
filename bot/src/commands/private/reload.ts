@@ -21,14 +21,17 @@ function safelyClearCommandCache(): string[] {
     // Get all cache keys first
     const keys = Object.keys(require.cache);
 
+    // Get project root directory dynamically instead of hardcoding
+    const projectRoot = process.cwd();
+
     // Filter to only include command modules
     const commandModuleKeys = keys.filter((key) => {
       // Basic path validation
       if (!key.startsWith("/") || !commandPattern.test(key)) {
         return false;
       }
-      // Extra validation: must be a .js or .ts file in our project
-      return /\.(js|ts)$/.test(key) && key.includes("/home/kevin/code/thread-watcher/");
+      // Extra validation: must be a .js or .ts file in our project directory
+      return /\.(js|ts)$/.test(key) && key.includes(projectRoot);
     });
 
     // Clear the matching modules

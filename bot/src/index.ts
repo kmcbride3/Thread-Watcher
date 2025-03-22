@@ -249,6 +249,15 @@ export async function webLog(
   }
 }
 
+// Define default timeout values directly
+const DEFAULT_TIMEOUTS = {
+  SHUTDOWN_FORCE_EXIT: 15000, // 15 seconds before force exit
+  SHARD_SHUTDOWN_GRACE: 3000, // 3 seconds grace period for shards
+  SHARD_SHUTDOWN_MAX_WAIT: 5000, // 5 seconds max wait for shards
+  SHARD_SPAWN_TIMEOUT: 180000, // 3 minutes for shard spawn
+  SHARD_SAFETY_TIMEOUT: 10000, // 10 seconds safety timeout
+};
+
 /**
  * Main shutdown handler for master process
  */
@@ -268,11 +277,14 @@ const handleMainShutdown = async (reason: string): Promise<void> => {
   trackInitState(`Main process shutdown started: ${reason}`);
   _shuttingDown = true;
 
+  // Get timeout values directly from defaults
+  const forceExitTimeout = DEFAULT_TIMEOUTS.SHUTDOWN_FORCE_EXIT;
+
   // Set a single force exit timeout
-  const forceExitTimeout = setTimeout(() => {
-    safeLog("error", "Shutdown taking too long - forcing exit");
+  const forceExitTimeoutId = setTimeout(() => {
+    safeLog("error", `Shutdown taking too long (${forceExitTimeout}ms) - forcing exit`);
     process.exit(1);
-  }, 15000); // Force exit after 15 seconds no matter what
+  }, forceExitTimeout);
 
   try {
     // Notify all shards to shut down
@@ -301,22 +313,35 @@ const handleMainShutdown = async (reason: string): Promise<void> => {
       // Wait for all shutdown messages to be sent
       await Promise.allSettled(shutdownPromises);
 
+      // Get grace period directly from defaults
+      const shardGracePeriod = DEFAULT_TIMEOUTS.SHARD_SHUTDOWN_GRACE;
+
       // Give shards time to begin their shutdown sequence
-      safeLog("debug", `Waiting for shards to acknowledge shutdown (3s grace period)`, "SHUTDOWN");
-      await new Promise<void>((resolve) => setTimeout(resolve, 3000));
+      safeLog(
+        "debug",
+        `Waiting for shards to acknowledge shutdown (${shardGracePeriod}ms grace period)`,
+        "SHUTDOWN"
+      );
+      await new Promise<void>((resolve) => setTimeout(resolve, shardGracePeriod));
 
       // Now wait for shards to process their shutdown sequence
       try {
-        // Force kill any shard that takes too long
-        const killTimeout = setTimeout(() => {
-          safeLog("warn", "Some shards taking too long, forcefully terminating", "SHUTDOWN");
-          destroyShards();
-        }, 5000); // 5s max wait for shards
+        // Get timeout value directly from defaults
+        const maxWaitTime = DEFAULT_TIMEOUTS.SHARD_SHUTDOWN_MAX_WAIT;
 
-        // Check if any shards are still alive
-        let allShardsTerminated = false;
-        while (!allShardsTerminated) {
-          allShardsTerminated = true;
+        safeLog("debug", `Waiting up to ${maxWaitTime}ms for shards to terminate`, "SHUTDOWN");
+
+        // Set a timeout to force kill any remaining shards
+        const killTimeout = setTimeout(() => {
+          safeLog("warn", "Shard shutdown timeout exceeded, forcing termination", "SHUTDOWN");
+          destroyShards();
+        }, maxWaitTime);
+
+        // Check for up to maxWaitTime if shards are terminated
+        const endTime = Date.now() + maxWaitTime;
+        while (Date.now() < endTime) {
+          let allShardsTerminated = true;
+
           for (const shard of shardManager.shards.values()) {
             if (shard.process && !shard.process.killed) {
               allShardsTerminated = false;
@@ -324,9 +349,11 @@ const handleMainShutdown = async (reason: string): Promise<void> => {
             }
           }
 
-          if (!allShardsTerminated) {
-            await new Promise<void>((resolve) => setTimeout(resolve, 500));
+          if (allShardsTerminated) {
+            break;
           }
+
+          await new Promise<void>((resolve) => setTimeout(resolve, 500));
         }
 
         clearTimeout(killTimeout);
@@ -373,7 +400,7 @@ const handleMainShutdown = async (reason: string): Promise<void> => {
     // Remove the process lock file
     removeProcessLock(ProcessType.MAIN);
   } finally {
-    clearTimeout(forceExitTimeout);
+    clearTimeout(forceExitTimeoutId);
     process.exit(0);
   }
 };
@@ -627,18 +654,20 @@ async function initializeShardProcess(): Promise<void> {
     );
     // DO NOT call shutdown here - parent process will coordinate
     // Set a safety timeout in case the parent process is unresponsive
-    const safetyTimeout = setTimeout(() => {
+    const safetyTimeout = DEFAULT_TIMEOUTS.SHARD_SAFETY_TIMEOUT;
+
+    const safetyTimeoutId = setTimeout(() => {
       logger.warn(
-        `No shutdown signal from parent process after 10s, proceeding with self-shutdown`,
+        `No shutdown signal from parent process after ${safetyTimeout}ms, proceeding with self-shutdown`,
         `${processState.role.toUpperCase()} ${processState.shardId}`
       );
       exitProcess(0, "Parent process unresponsive during shutdown");
-    }, 10000); // 10s safety timeout
+    }, safetyTimeout);
 
     // Clear timeout if we receive the expected shutdown message
     const messageHandler = (message: unknown) => {
       if (message === "shutdown") {
-        clearTimeout(safetyTimeout);
+        clearTimeout(safetyTimeoutId);
         process.off("message", messageHandler); // Remove handler once we get the message
       }
     };
@@ -652,18 +681,20 @@ async function initializeShardProcess(): Promise<void> {
     );
     // DO NOT call shutdown here - parent process will coordinate
     // Set a safety timeout in case the parent process is unresponsive
-    const safetyTimeout = setTimeout(() => {
+    const safetyTimeout = DEFAULT_TIMEOUTS.SHARD_SAFETY_TIMEOUT;
+
+    const safetyTimeoutId = setTimeout(() => {
       logger.warn(
         "No shutdown signal from parent process after 10s, proceeding with self-shutdown",
         `${processState.role.toUpperCase()} ${processState.shardId}`
       );
       exitProcess(0, "Parent process unresponsive during shutdown");
-    }, 10000); // 10s safety timeout
+    }, safetyTimeout);
 
     // Clear timeout if we receive the expected shutdown message
     const messageHandler = (message: unknown) => {
       if (message === "shutdown") {
-        clearTimeout(safetyTimeout);
+        clearTimeout(safetyTimeoutId);
         process.off("message", messageHandler); // Remove handler once we get the message
       }
     };
@@ -1173,7 +1204,9 @@ async function spawnShards(manager: ShardingManager): Promise<void> {
 }
 
 async function performShardSpawn(manager: ShardingManager): Promise<void> {
-  const spawnTimeout = 180000;
+  // Get timeout value directly from defaults or shardTimeouts config
+  const spawnTimeout = DEFAULT_TIMEOUTS.SHARD_SPAWN_TIMEOUT;
+
   logger.debug(
     `Starting shard spawn process with timeout of ${spawnTimeout / 1000} seconds`,
     `${processState.role.toUpperCase()}`

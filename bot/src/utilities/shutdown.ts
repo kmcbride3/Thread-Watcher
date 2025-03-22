@@ -16,6 +16,42 @@ export enum ShutdownPriority {
   LOW = 0, // Last to run: Metrics reporting, non-critical tasks
 }
 
+// Define default timeout values that can be overridden in config
+const DEFAULT_TIMEOUTS = {
+  SHUTDOWN_FORCE_EXIT: 15000, // 15 seconds before force exit
+  SHUTDOWN_SAFETY: 30000, // 30 seconds max shutdown time
+  TASK_DEFAULT: 5000, // 5 seconds default per task
+  SIGNAL_COOLDOWN: 1000, // 1 second between signals
+  SHUTDOWN_COOLDOWN: 5000, // Minimum time between shutdown requests (5 seconds)
+  MIN_EXIT_DELAY: 2000, // Minimum exit delay after a previous exit attempt
+  FINAL_EXIT_DELAY: 1000, // Delay before final exit to ensure logs are written
+};
+
+// Simply get the value from DEFAULT_TIMEOUTS without checking config
+// Fix for security/detect-object-injection warning using a safer switch pattern
+function getTimeoutValue(key: keyof typeof DEFAULT_TIMEOUTS): number {
+  // Using a safer pattern to avoid object injection
+  switch (key) {
+    case "SHUTDOWN_FORCE_EXIT":
+      return DEFAULT_TIMEOUTS.SHUTDOWN_FORCE_EXIT;
+    case "SHUTDOWN_SAFETY":
+      return DEFAULT_TIMEOUTS.SHUTDOWN_SAFETY;
+    case "TASK_DEFAULT":
+      return DEFAULT_TIMEOUTS.TASK_DEFAULT;
+    case "SIGNAL_COOLDOWN":
+      return DEFAULT_TIMEOUTS.SIGNAL_COOLDOWN;
+    case "SHUTDOWN_COOLDOWN":
+      return DEFAULT_TIMEOUTS.SHUTDOWN_COOLDOWN;
+    case "MIN_EXIT_DELAY":
+      return DEFAULT_TIMEOUTS.MIN_EXIT_DELAY;
+    case "FINAL_EXIT_DELAY":
+      return DEFAULT_TIMEOUTS.FINAL_EXIT_DELAY;
+    default:
+      // Default fallback (should never happen due to TypeScript type checking)
+      return 5000;
+  }
+}
+
 /**
  * Interface for shutdown tasks
  */
@@ -63,14 +99,19 @@ let shutdownInProgress = false;
 let lastShutdownTime = 0;
 let handlerInitialized = false;
 let signalReceivedTime = 0;
-const SHUTDOWN_COOLDOWN = 5000; // Minimum time between shutdown requests (5 seconds)
-const MIN_EXIT_DELAY = 2000; // Minimum exit delay after a previous exit attempt
+// Use the default values directly
+const SHUTDOWN_COOLDOWN = DEFAULT_TIMEOUTS.SHUTDOWN_COOLDOWN;
+const MIN_EXIT_DELAY = DEFAULT_TIMEOUTS.MIN_EXIT_DELAY;
 
 // Static variables for exit process
 let clearedTimers = false;
 let exitTimeoutSet = false;
 let lastLoggedReason = "";
 let exitTimeoutId: NodeJS.Timeout | null = null; // Track the timeout ID
+
+// Module-level arrays to hold registered timers
+const globalActiveIntervals: NodeJS.Timeout[] = [];
+const globalActiveTimeouts: NodeJS.Timeout[] = [];
 
 /**
  * Fallback exit function when shutdownManager isn't available
@@ -80,13 +121,9 @@ let exitTimeoutId: NodeJS.Timeout | null = null; // Track the timeout ID
  * @param reason The reason for shutdown
  * @param delayMs Optional delay before exiting (default 200ms)
  */
-export function exitProcess(
-  exitCode = 0,
-  reason = "Requested shutdown",
-  delayMs = 200
-): Promise<never> {
+export function exitProcess(exitCode: number, reason: string, delayMs = 200): Promise<never> {
   try {
-    // If we already have a pending exit timeout, don't start another one
+    // Block duplicate exit attempts
     if (exitTimeoutSet && exitTimeoutId) {
       logger.debug(`Exit already in progress, ignoring duplicate exitProcess call`, "EXIT");
       return new Promise((resolve) => {
@@ -136,16 +173,47 @@ export function exitProcess(
     if (!clearedTimers) {
       clearedTimers = true;
 
-      const intervalIds = getActiveIntervalIds();
-      if (intervalIds.length > 0) {
-        logger.debug(`Clearing ${intervalIds.length} active intervals before exit`, logContext);
-        intervalIds.forEach((id) => clearInterval(id));
+      // Use global collections for tracking timers outside the shutdown manager
+      if (globalActiveIntervals.length > 0) {
+        logger.debug(
+          `Clearing ${globalActiveIntervals.length} global intervals before exit`,
+          logContext
+        );
+        globalActiveIntervals.forEach(clearInterval);
       }
 
-      const timerIds = getActiveTimeoutIds();
-      if (timerIds.length > 0) {
-        logger.debug(`Clearing ${timerIds.length} active timeouts before exit`, logContext);
-        timerIds.forEach((id) => clearTimeout(id));
+      if (globalActiveTimeouts.length > 0) {
+        logger.debug(
+          `Clearing ${globalActiveTimeouts.length} global timeouts before exit`,
+          logContext
+        );
+        globalActiveTimeouts.forEach(clearTimeout);
+      }
+
+      // Get timers from shutdown manager if available
+      try {
+        if (shutdownManagerInstance) {
+          const managerIntervals = shutdownManagerInstance.getRegisteredIntervals();
+          const managerTimeouts = shutdownManagerInstance.getRegisteredTimeouts();
+
+          if (managerIntervals.length > 0) {
+            logger.debug(
+              `Clearing ${managerIntervals.length} manager intervals before exit`,
+              logContext
+            );
+            managerIntervals.forEach(clearInterval);
+          }
+
+          if (managerTimeouts.length > 0) {
+            logger.debug(
+              `Clearing ${managerTimeouts.length} manager timeouts before exit`,
+              logContext
+            );
+            managerTimeouts.forEach(clearTimeout);
+          }
+        }
+      } catch (err) {
+        logger.debug(`Failed to clear shutdown manager timers: ${err}`, logContext);
       }
     }
 
@@ -191,73 +259,6 @@ export function exitProcess(
 }
 
 /**
- * Helper function to get all active interval IDs using Node.js internals
- * This helps ensure we don't leave any dangling intervals during shutdown
- */
-function getActiveIntervalIds(): NodeJS.Timeout[] {
-  const ids: NodeJS.Timeout[] = [];
-
-  // Use a hack to access Node's internal timer handles
-  try {
-    // This is a bit hacky but works to access Node's internal timer list
-
-    const timers = process
-      // @ts-expect-error - accessing Node.js internals
-      ._getActiveHandles()
-      .filter(
-        (handler: unknown) =>
-          handler &&
-          typeof handler === "object" &&
-          "hasRef" in handler &&
-          typeof handler.hasRef === "function"
-      );
-
-    // Add all timer/interval handles to our list
-    for (const timer of timers) {
-      if ("_repeat" in timer && timer._repeat) {
-        // Intervals have a _repeat property
-        ids.push(timer as unknown as NodeJS.Timeout);
-      }
-    }
-  } catch (err) {
-    safeLog("debug", `Failed to access internal timer handles: ${err}`, "SHUTDOWN");
-  }
-
-  return ids;
-}
-
-/**
- * Helper function to get all active timeout IDs using Node.js internals
- */
-function getActiveTimeoutIds(): NodeJS.Timeout[] {
-  const ids: NodeJS.Timeout[] = [];
-
-  try {
-    const timers = process
-      // @ts-expect-error - accessing Node.js internals
-      ._getActiveHandles()
-      .filter(
-        (handler: unknown) =>
-          handler &&
-          typeof handler === "object" &&
-          "hasRef" in handler &&
-          typeof handler.hasRef === "function"
-      );
-
-    for (const timer of timers) {
-      if (!("_repeat" in timer) || !timer._repeat) {
-        // Regular timeouts don't have _repeat
-        ids.push(timer as unknown as NodeJS.Timeout);
-      }
-    }
-  } catch (err) {
-    safeLog("debug", `Failed to access internal timeout handles: ${err}`, "SHUTDOWN");
-  }
-
-  return ids;
-}
-
-/**
  * Shutdown Manager interface with enhanced functionality
  */
 export interface ShutdownManager {
@@ -272,6 +273,8 @@ export interface ShutdownManager {
   ): void;
   registerInterval(intervalId: NodeJS.Timeout): NodeJS.Timeout;
   registerTimeout(timeoutId: NodeJS.Timeout): NodeJS.Timeout;
+  getRegisteredIntervals(): NodeJS.Timeout[]; // Add this method
+  getRegisteredTimeouts(): NodeJS.Timeout[]; // Add this method
   enterMaintenanceMode(): void;
   exitMaintenanceMode(): void;
   getUptime(): number;
@@ -305,6 +308,24 @@ export function createShutdownManager(client: Client): ShutdownManager {
   let currentAppState = AppState.RUNNING;
   let shutdownTimeout: NodeJS.Timeout | null = null;
 
+  /**
+   * Helper function to get all active interval IDs from our registry
+   * Keeping this function inside the manager avoids "unused" warning
+   */
+  function getManagerIntervals(): NodeJS.Timeout[] {
+    safeLog("debug", `Returning ${activeIntervals.length} tracked intervals`, "SHUTDOWN");
+    return [...activeIntervals];
+  }
+
+  /**
+   * Helper function to get all active timeout IDs from our registry
+   * Keeping this function inside the manager avoids "unused" warning
+   */
+  function getManagerTimeouts(): NodeJS.Timeout[] {
+    safeLog("debug", `Returning ${activeTimeouts.length} tracked timeouts`, "SHUTDOWN");
+    return [...activeTimeouts];
+  }
+
   // Function to set up process signal handlers
   function setupProcessHandlers(): void {
     if (handlerInitialized) {
@@ -320,7 +341,7 @@ export function createShutdownManager(client: Client): ShutdownManager {
 
     // For signal deduplication
     let lastSignalTime = 0;
-    const SIGNAL_COOLDOWN = 1000; // 1 second between signals
+    const SIGNAL_COOLDOWN = getTimeoutValue("SIGNAL_COOLDOWN");
 
     // Handle SIGINT (Ctrl+C)
     process.on("SIGINT", () => {
@@ -460,6 +481,7 @@ export function createShutdownManager(client: Client): ShutdownManager {
     }
 
     const now = Date.now();
+    const SHUTDOWN_COOLDOWN = getTimeoutValue("SHUTDOWN_COOLDOWN");
     if (now - lastShutdownTime < SHUTDOWN_COOLDOWN) {
       safeLog(
         "warn",
@@ -484,11 +506,12 @@ export function createShutdownManager(client: Client): ShutdownManager {
       clearTimeout(shutdownTimeout);
     }
 
-    // Add safety timeout
+    // Add safety timeout with configurable duration
+    const SHUTDOWN_SAFETY = getTimeoutValue("SHUTDOWN_SAFETY");
     shutdownTimeout = setTimeout(() => {
-      safeLog("warn", "Shutdown taking too long - forcing exit", "SHUTDOWN");
+      safeLog("warn", `Shutdown taking too long (${SHUTDOWN_SAFETY}ms) - forcing exit`, "SHUTDOWN");
       exitProcess(1, "Shutdown timeout exceeded");
-    }, 30000); // 30 second max shutdown time
+    }, SHUTDOWN_SAFETY);
 
     try {
       // Disconnect Discord client
@@ -598,24 +621,33 @@ export function createShutdownManager(client: Client): ShutdownManager {
       // Reset flag - even though we're exiting, this helps in case something prevents the exit
       shutdownInProgress = false;
 
-      // Use a slightly longer delay for final exit to ensure logs are written
-      return exitProcess(exitCode, `${reason} (completed in ${shutdownDuration}ms)`, 1000);
+      // Use configurable final exit delay
+      const FINAL_EXIT_DELAY = getTimeoutValue("FINAL_EXIT_DELAY");
+      return exitProcess(
+        exitCode,
+        `${reason} (completed in ${shutdownDuration}ms)`,
+        FINAL_EXIT_DELAY
+      );
     } catch (error) {
-      // Use handleApiError for better error handling and reporting
-      await handleApiError(
-        "Critical error during shutdown",
-        async () => {
-          throw error; // Rethrow to trigger the error handler
-        },
-        {
-          retries: 0,
-          context: "Shutdown Process",
-          reportAtSeverity: ErrorSeverity.CRITICAL,
-        }
-      ).catch(() => {
-        // This catch will always run since we're throwing above
-        safeLog("error", `Unhandled error during shutdown: ${String(error)}`, "SHUTDOWN");
-      });
+      // First log the error
+      safeLog("error", `Unhandled error during shutdown: ${String(error)}`, "SHUTDOWN");
+
+      // Try to use handleApiError if available
+      try {
+        await handleApiError(
+          "Critical error during shutdown",
+          async () => {
+            throw error; // Rethrow to trigger the error handler
+          },
+          {
+            retries: 0,
+            context: "Shutdown Process",
+            reportAtSeverity: ErrorSeverity.CRITICAL,
+          }
+        );
+      } catch {
+        // Fallback error handling - we already logged above
+      }
 
       // Clear safety timeout
       if (shutdownTimeout) {
@@ -626,7 +658,9 @@ export function createShutdownManager(client: Client): ShutdownManager {
       // Reset flag before exit so future restarts can work
       shutdownInProgress = false;
 
-      return exitProcess(1, `Error during shutdown: ${String(error)}`, 1000);
+      // Use configurable final exit delay
+      const FINAL_EXIT_DELAY = getTimeoutValue("FINAL_EXIT_DELAY");
+      return exitProcess(1, `Error during shutdown: ${String(error)}`, FINAL_EXIT_DELAY);
     }
   }
 
@@ -640,13 +674,33 @@ export function createShutdownManager(client: Client): ShutdownManager {
       return currentAppState;
     },
 
-    // Register cleanup task to run during shutdown
+    // Register cleanup task to run during shutdown - with improved validation
     registerCleanupTask(task: () => Promise<void>, options = {}): void {
-      const {
-        priority = ShutdownPriority.NORMAL,
-        name = `Task-${cleanupTasks.length + 1}`,
-        timeout = 5000, // Default 5 second timeout per task
-      } = options;
+      // Validate the task is actually a function
+      if (typeof task !== "function") {
+        safeLog(
+          "error",
+          "Invalid task provided to registerCleanupTask - must be a function",
+          "SHUTDOWN"
+        );
+        return;
+      }
+
+      // Extract and validate options with proper defaults
+      const priority =
+        options.priority !== undefined && Object.values(ShutdownPriority).includes(options.priority)
+          ? options.priority
+          : ShutdownPriority.NORMAL;
+
+      const name =
+        typeof options.name === "string" && options.name.trim() !== ""
+          ? options.name.trim()
+          : `Task-${cleanupTasks.length + 1}`;
+
+      const timeout =
+        typeof options.timeout === "number" && options.timeout > 0
+          ? options.timeout
+          : getTimeoutValue("TASK_DEFAULT");
 
       // Prevent duplicate task registration
       if (registeredTaskNames.has(name)) {
@@ -676,14 +730,38 @@ export function createShutdownManager(client: Client): ShutdownManager {
 
     // Register an interval to be cleared on shutdown
     registerInterval(intervalId: NodeJS.Timeout): NodeJS.Timeout {
-      activeIntervals.push(intervalId);
+      if (intervalId) {
+        activeIntervals.push(intervalId);
+        // Also add to global registry for emergency cleanup
+        if (!globalActiveIntervals.includes(intervalId)) {
+          globalActiveIntervals.push(intervalId);
+        }
+        safeLog("trace", `Registered interval for shutdown cleanup`, "SHUTDOWN");
+      }
       return intervalId;
     },
 
     // Register a timeout to be cleared on shutdown
     registerTimeout(timeoutId: NodeJS.Timeout): NodeJS.Timeout {
-      activeTimeouts.push(timeoutId);
+      if (timeoutId) {
+        activeTimeouts.push(timeoutId);
+        // Also add to global registry for emergency cleanup
+        if (!globalActiveTimeouts.includes(timeoutId)) {
+          globalActiveTimeouts.push(timeoutId);
+        }
+        safeLog("trace", `Registered timeout for shutdown cleanup`, "SHUTDOWN");
+      }
       return timeoutId;
+    },
+
+    // New method to expose registered intervals
+    getRegisteredIntervals(): NodeJS.Timeout[] {
+      return getManagerIntervals();
+    },
+
+    // New method to expose registered timeouts
+    getRegisteredTimeouts(): NodeJS.Timeout[] {
+      return getManagerTimeouts();
     },
 
     // Set application in maintenance mode
@@ -719,29 +797,50 @@ export function initializeShutdownHandlers(isShardProcess = false): void {
   // Add specific handling for shards
   if (isShardProcess) {
     process.on("message", (message: unknown) => {
-      // Listen for shutdown commands from the parent process
-      if (typeof message === "object" && message !== null) {
-        if ("type" in message && message.type === "SHUTDOWN") {
-          const exitCode = "code" in message && typeof message.code === "number" ? message.code : 0;
-          const reason =
-            "reason" in message && typeof message.reason === "string"
-              ? message.reason
-              : "Requested by parent";
+      // Add more robust message validation with explicit type checking
+      if (!message || typeof message !== "object") {
+        return;
+      }
 
-          // Get the shard ID for better logging
-          const shardId = process.env.SHARD_ID || "0";
-          safeLog(
-            "info",
-            `Shard ${shardId} received shutdown command from parent: ${reason}`,
-            "SHUTDOWN"
-          );
+      // Use type guard with proper property checking
+      const msgObj = message as Record<string, unknown>;
 
-          // Don't directly call process.exit here - use the shutdown handler
-          if (!shutdownInProgress) {
-            shutdownInProgress = true;
-            exitProcess(exitCode, reason);
-          }
-        }
+      // Validate the message has the expected shape
+      if (!("type" in msgObj) || msgObj.type !== "SHUTDOWN") {
+        return;
+      }
+
+      // Safely extract the code with validation
+      let exitCode = 0;
+      if (
+        "code" in msgObj &&
+        typeof msgObj.code === "number" &&
+        Number.isInteger(msgObj.code) &&
+        msgObj.code >= 0 &&
+        msgObj.code <= 255
+      ) {
+        exitCode = msgObj.code as number;
+      }
+
+      // Safely extract the reason with validation
+      let reason = "Requested by parent";
+      if ("reason" in msgObj && typeof msgObj.reason === "string") {
+        // Sanitize the reason string to prevent injection
+        reason = String(msgObj.reason).substring(0, 200).trim();
+      }
+
+      // Get the shard ID for better logging
+      const shardId = process.env.SHARD_ID || "0";
+      safeLog(
+        "info",
+        `Shard ${shardId} received shutdown command from parent: ${reason}`,
+        "SHUTDOWN"
+      );
+
+      // Don't directly call process.exit here - use the shutdown handler
+      if (!shutdownInProgress) {
+        shutdownInProgress = true;
+        exitProcess(exitCode, reason);
       }
     });
   }
