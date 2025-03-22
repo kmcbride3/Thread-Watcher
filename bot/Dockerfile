@@ -1,6 +1,6 @@
-# Multi-stage build and app-only image
+# Multi-stage build with improved file organization
 
-# Create base image with toolchain required to install dependencies
+# Stage 1: Build the application
 FROM node:22-slim AS builder
 
 # Setup environment in a single layer
@@ -36,24 +36,28 @@ RUN yarn run build && \
     yarn workspaces focus --production && \
     yarn cache clean
 
-# Create production image without including the toolchain 
+# Stage 2: Assembly - organize files for the final image
+FROM scratch AS assembly
+
+# Copy each component separately for clarity
+COPY --from=builder /usr/src/bot/node_modules /assembly/node_modules
+COPY --from=builder /usr/src/bot/dist /assembly/dist
+COPY --from=builder /usr/src/bot/_config.json5 /assembly/
+COPY --from=builder /usr/src/bot/.commandshash /assembly/
+COPY --from=builder /usr/src/bot/data /assembly/data
+
+# Stage 3: Final minimal runtime image
 FROM gcr.io/distroless/nodejs22-debian12 AS bot
 
 # Set environment and working directory
 ENV NODE_ENV=production
 WORKDIR /usr/src/bot
 
-# Copy all necessary files in a single layer
-COPY --chown=1000:1000 --from=builder \
-     /usr/src/bot/node_modules \
-     /usr/src/bot/dist \
-     /usr/src/bot/_config.json5 \
-     /usr/src/bot/.commandshash \
-     /usr/src/bot/data \
-     /usr/src/bot/
+# Copy everything from the assembly image in a single layer
+COPY --chown=1000:1000 --from=assembly /assembly/ /usr/src/bot/
 
 # Configure script permissions for a non-root user
 USER 1000:1000
 
-# Fix: Use node command explicitly to run the JS file
-CMD ["node", "/usr/src/bot/dist/index.js"]
+# Start the application
+CMD ["/usr/src/bot/dist/index.js"]

@@ -1152,6 +1152,15 @@ function getShardCount(): number | "auto" {
 }
 
 /**
+ * Returns the correct path to package.json based on environment
+ */
+export function getPackageJsonPath(): string {
+  return process.env.NODE_ENV === "production"
+    ? "/usr/src/bot/package.json" // Path in Docker
+    : "./package.json"; // Path for local development
+}
+
+/**
  * Create a new ShardingManager instance
  */
 function createShardingManager(args: string[], shardCount: number | "auto"): ShardingManager {
