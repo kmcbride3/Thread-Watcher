@@ -26,7 +26,13 @@ RUN yarn config set nodeLinker node-modules && \
 
 # Copy source, build, and prepare production files in one layer
 COPY ["./src/", "/usr/src/bot/src/"]
+
+# Verify build process and check that files exist
 RUN yarn run build && \
+    ls -la /usr/src/bot/dist && \
+    # Ensure the main file exists
+    test -f /usr/src/bot/dist/index.js && \
+    # Optimize dependencies for production
     yarn workspaces focus --production && \
     yarn cache clean
 
@@ -46,5 +52,8 @@ COPY --chown=1000:1000 --from=builder \
      /usr/src/bot/data \
      /usr/src/bot/
 
-# Start the bot & register slash commands.
-CMD [ "./dist/index.js", "-reg_commands" ]
+# Configure script permissions for a non-root user
+USER 1000:1000
+
+# Fix: Use node command explicitly to run the JS file
+CMD ["node", "/usr/src/bot/dist/index.js"]

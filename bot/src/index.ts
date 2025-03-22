@@ -1160,7 +1160,15 @@ function createShardingManager(args: string[], shardCount: number | "auto"): Sha
     `${processState.role.toUpperCase()}`
   );
 
-  return new ShardingManager("./dist/index.js", {
+  // Use path.join for reliable file paths across environments
+  const scriptPath =
+    process.env.NODE_ENV === "production"
+      ? "/usr/src/bot/dist/index.js" // Path in Docker
+      : "./dist/index.js"; // Path for local development
+
+  logger.debug(`Using shard script path: ${scriptPath}`, "SHARD_MANAGER");
+
+  return new ShardingManager(scriptPath, {
     totalShards: shardCount,
     shardArgs: args,
     token: _configData.tokens.discord,
