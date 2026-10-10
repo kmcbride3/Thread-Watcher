@@ -7,17 +7,17 @@ import {
   ModalSubmitInteraction,
   TextInputBuilder,
   TextInputStyle,
-} from "discord.js";
-import { logger } from "../index";
-import TwGenericComponent from "../interfaces/genericComponent";
-import { handleApiError } from "../utilities/apiErrorHandler";
+} from "discord.js"
+import TwGenericComponent from "../interfaces/genericComponent"
+import { handleApiError } from "../utilities/apiErrorHandler"
+import { logger } from "../utilities/logger"
 
 type modalSubmit = (interaction: ModalSubmitInteraction) => void;
 export type modalFilter = (interaction: ModalSubmitInteraction) => boolean;
 
 const ModalInteractionQueue: Collection<string, TwModal> = new Collection<string, TwModal>();
 
-export { ModalInteractionQueue };
+export { ModalInteractionQueue }
 
 /**
  * I am truly the smartest brogrammer that has ever lived

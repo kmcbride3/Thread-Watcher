@@ -139,7 +139,7 @@ async function handleLogsConfig(
     throw new Error("Bot settings service is unavailable");
   }
 
-  const userSettings = serviceRegistry.get(SERVICE_KEYS.USER_SETTINGS, {
+  const userSettings = await serviceRegistry.get(SERVICE_KEYS.USER_SETTINGS, {
     errorContext: "Config Command - User Settings Access",
   });
 
@@ -195,7 +195,7 @@ async function handleBehaviourConfig(
     throw new Error("Bot settings service is unavailable");
   }
 
-  const userSettings = serviceRegistry.get(SERVICE_KEYS.USER_SETTINGS, {
+  const userSettings = await serviceRegistry.get(SERVICE_KEYS.USER_SETTINGS, {
     errorContext: "Config Command - Behavior Settings Access",
   });
 

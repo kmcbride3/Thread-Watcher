@@ -3,17 +3,17 @@ import {
   Collection,
   MessageFlagsBitField,
   StringSelectMenuBuilder,
-} from "discord.js";
-import TwGenericComponent from "../interfaces/genericComponent";
-import { handleApiError } from "../utilities/apiErrorHandler";
-import { logger } from "../utilities/logger";
+} from "discord.js"
+import TwGenericComponent from "../interfaces/genericComponent"
+import { handleApiError } from "../utilities/apiErrorHandler"
+import { logger } from "../utilities/logger"
 
 type stringSelectSubmit = (interaction: AnySelectMenuInteraction) => void;
 export type stringSelectFilter = (interaction: AnySelectMenuInteraction) => boolean;
 
 const StringSelectInteractionQueue = new Collection<string, TwStringSelect>();
 
-export { StringSelectInteractionQueue };
+export { StringSelectInteractionQueue }
 
 export default class TwStringSelect implements TwGenericComponent<AnySelectMenuInteraction> {
   public select: StringSelectMenuBuilder;

@@ -88,9 +88,8 @@ const reloadCommand: Command = {
             await reloadCommands();
 
             const results = await shardManager.broadcastEval(async (client) => {
-              const { default: reloadCommands } = await import(
-                "../../utilities/routines/reloadCommands"
-              );
+              const { default: reloadCommands } =
+                await import("../../utilities/routines/reloadCommands");
               await reloadCommands();
               return `Shard ${client.shard?.ids[0]} reloaded commands successfully`;
             });

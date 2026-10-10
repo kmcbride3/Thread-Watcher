@@ -4,12 +4,15 @@ import {
   SlashCommandBuilder,
   version as djsVersion,
 } from "discord.js";
-import { version } from "../../../package.json";
 import { Command } from "../../interfaces/command";
 import { SERVICE_KEYS, serviceRegistry } from "../../services";
 import { ErrorSeverity, handleApiError, handleCommandError } from "../../utilities/errorSystem";
 import { formatDuration, formatNumber } from "../../utilities/formatUtils";
 import { rateLimitManager } from "../../utilities/rateLimitManager";
+
+// Use environment variable, hardcoded version, or "Unknown" as fallback
+// This avoids the need to access package.json which is causing container issues
+const BOT_VERSION = process.env.BOT_VERSION || "1.0.0";
 
 const infoCommand: Command = {
   run: async (interaction: ChatInputCommandInteraction, buildBaseEmbed) => {
@@ -20,12 +23,12 @@ const infoCommand: Command = {
       await rateLimitManager.waitForRateLimit("commands/info");
 
       // Get client from service registry
-      const client = serviceRegistry.get(SERVICE_KEYS.CLIENT, {
+      const client = await serviceRegistry.get(SERVICE_KEYS.CLIENT, {
         errorContext: "Info Command - Client Access",
         reportErrors: true,
       });
 
-      const db = serviceRegistry.get(SERVICE_KEYS.DATABASE, {
+      const db = await serviceRegistry.get(SERVICE_KEYS.DATABASE, {
         errorContext: "Info Command - Database Access",
         reportErrors: true,
       });
@@ -48,7 +51,7 @@ const infoCommand: Command = {
         .setColor(0x0099ff)
         .setTitle("Thread Watcher Info")
         .addFields(
-          { name: "Bot Version", value: version || "Unknown", inline: true },
+          { name: "Bot Version", value: BOT_VERSION || "Unknown", inline: true },
           { name: "Discord.js", value: `v${djsVersion}`, inline: true },
           { name: "Node.js", value: `${process.version}`, inline: true },
           { name: "Uptime", value: uptime, inline: true },

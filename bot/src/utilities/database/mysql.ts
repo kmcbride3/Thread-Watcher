@@ -1,14 +1,14 @@
-import { spawn } from "child_process";
-import { Collection } from "discord.js";
-import { createWriteStream, existsSync, mkdirSync } from "fs";
-import { createPool, Pool, PoolConnection, QueryOptions } from "mysql";
-import { join } from "path";
-import { logger } from "../../index";
-import { ChannelData, Database, ThreadData } from "../../interfaces/database";
-import { handleApiError } from "../apiErrorHandler";
-import { ConfigFile } from "../cnf/index";
-import { rateLimitManager } from "../rateLimitManager";
-import { clearDatabaseTimeout, createDatabaseTimeout, getBackupName } from "./DatabaseManager";
+import { spawn } from "child_process"
+import { Collection } from "discord.js"
+import { createWriteStream, existsSync, mkdirSync } from "fs"
+import { createPool, Pool, PoolConnection, QueryOptions } from "mysql"
+import { join } from "path"
+import { ChannelData, Database, ThreadData } from "../../interfaces/database"
+import { handleApiError } from "../apiErrorHandler"
+import { ConfigFile } from "../cnf/index"
+import { logger } from "../logger"
+import { rateLimitManager } from "../rateLimitManager"
+import { clearDatabaseTimeout, createDatabaseTimeout, getBackupName } from "./DatabaseManager"
 
 interface ThreadRow {
   id: string;

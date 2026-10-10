@@ -1,10 +1,11 @@
-import { ShardingManager } from "discord.js";
-import express, { NextFunction, Request, Response } from "express";
-import { config, logger } from "../index";
-import { Database } from "../interfaces/database";
-import { ErrorSeverity, handleApiError } from "../utilities/errorSystem";
-import { formatDuration, formatFileSize, truncate } from "../utilities/formatUtils";
-import { rateLimitManager } from "../utilities/rateLimitManager";
+import { ShardingManager } from "discord.js"
+import express, { NextFunction, Request, Response } from "express"
+import { config } from "../index"
+import { Database } from "../interfaces/database"
+import { ErrorSeverity, handleApiError } from "../utilities/errorSystem"
+import { formatDuration, formatFileSize, truncate } from "../utilities/formatUtils"
+import { logger } from "../utilities/logger"
+import { rateLimitManager } from "../utilities/rateLimitManager"
 
 let started = false;
 

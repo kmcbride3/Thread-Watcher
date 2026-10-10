@@ -5,22 +5,15 @@ import path from "path";
 import { stripVTControlCharacters } from "util";
 import { getProcessContext } from "./processState";
 
-// Keep track of logger module load to avoid duplicate startup messages
-let loggerModuleLoaded = false;
 let startupMessageShown = false;
 
 // More controlled initialization message - only show once per process
-if (!loggerModuleLoaded) {
-  // Check if we're a shard to avoid duplicate messages across processes
-  const isShard = process.argv.includes("--is-shard") || process.env.IS_SHARD === "true";
+// Check if we're a shard to avoid duplicate messages across processes
+const isShard = process.argv.includes("--is-shard") || process.env.IS_SHARD === "true";
 
-  // Only show the startup message for the main process at debug level
-  if (!isShard) {
-    console.debug(`Loading Thread-Watcher logger (PID: ${process.pid})`);
-  }
-
-  // Always mark module as loaded regardless of process type
-  loggerModuleLoaded = true;
+// Only show the startup message for the main process at debug level
+if (!isShard) {
+  console.debug(`Loading Thread-Watcher logger (PID: ${process.pid})`);
 }
 
 // Define status types as a constant array to serve as a single source of truth
@@ -207,6 +200,9 @@ function getLogStyle(type: StatusType) {
       case "log":
         style = configSettings.style.log;
         break;
+      default:
+        style = configSettings.style.info; // Fallback to info style
+        break;
     }
   }
 
@@ -229,12 +225,13 @@ function createAnsiColorFunction(colorValue: ColorResolvable): (text: string) =>
     const colorInt = resolveColor(colorValue);
 
     // Extract RGB components from the resolved integer
-    const r = (colorInt >> 16) & 0xff;
-    const g = (colorInt >> 8) & 0xff;
-    const b = colorInt & 0xff;
+    const extractedRed = (colorInt >> 16) & 0xff;
+    const extractedGreen = (colorInt >> 8) & 0xff;
+    const extractedBlue = colorInt & 0xff;
 
     // Return a function that applies these RGB values as ANSI color codes
-    return (text: string) => `\x1b[38;2;${r};${g};${b}m${text}\x1b[0m`;
+    return (text: string) =>
+      `\x1b[38;2;${extractedRed};${extractedGreen};${extractedBlue}m${text}\x1b[0m`;
   } catch {
     // Fallback to light gray on error
     console.error(`Invalid color format: ${String(colorValue)}`);
@@ -423,7 +420,7 @@ export class Log76 extends Log75 {
       case "trace":
         this.trace = logMethod;
         break;
-      case "log":
+      default:
         this.log = logMethod;
         break;
     }
@@ -528,10 +525,10 @@ export const initLogger = (options: LoggerOptions = {}): Logger => {
 
     // For shards, use trace level to minimize console spam
     if (isShard) {
-      logger.trace(`Logger initialized in shard process ${process.pid}`);
+      logger.trace(`Logger initialized in shard Process ${process.pid}`);
     } else {
       // Main process can use debug level
-      logger.debug(`Logger initialized in main process ${process.pid}`);
+      logger.debug(`Logger initialized in main Process ${process.pid}`);
     }
     startupMessageShown = true;
   }
@@ -566,11 +563,11 @@ export const initLogFile = (customDir?: string, customFilename?: string): void =
     const stats = statSync(file);
     if (stats.isDirectory()) {
       writeFileSync(`${file}.old`, "");
-      writeFileSync(file, "", { mode: 0o666 });
+      writeFileSync(file, "", { mode: 0o640 });
     }
   } catch (e: unknown) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") {
-      writeFileSync(file, "", { mode: 0o666 });
+      writeFileSync(file, "", { mode: 0o640 });
     } else {
       throw e;
     }
@@ -643,7 +640,7 @@ export async function safeLog(level: string, message: string, context?: string):
           case "trace":
             logger.trace(message, context);
             return;
-          case "log":
+          default:
             logger.log(message, context);
             return;
         }

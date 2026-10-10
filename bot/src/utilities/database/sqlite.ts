@@ -1,9 +1,9 @@
-import sql, { Database as sqliteDatabase } from "better-sqlite3";
-import { join } from "path";
-import { logger } from "../../index";
-import { ChannelData, Database, ThreadData } from "../../interfaces/database";
-import { ConfigFile } from "../cnf/index";
-import { getBackupName } from "./DatabaseManager";
+import sql, { Database as sqliteDatabase } from "better-sqlite3"
+import { join } from "path"
+import { ChannelData, Database, ThreadData } from "../../interfaces/database"
+import { ConfigFile } from "../cnf/index"
+import { logger } from "../logger"
+import { getBackupName } from "./DatabaseManager"
 
 // Type for internal database rows
 interface ChannelRow {

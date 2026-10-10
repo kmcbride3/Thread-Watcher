@@ -1,23 +1,23 @@
-import { Collection, TextChannel, ThreadAutoArchiveDuration, ThreadChannel } from "discord.js";
-import { LogLevel } from "log75";
-import { logger } from "../../index";
+import { Collection, TextChannel, ThreadAutoArchiveDuration, ThreadChannel } from "discord.js"
+import { LogLevel } from "log75"
 import {
   ThreadBumpResult,
   ThreadMaintenanceResponse,
   ThreadMaintenanceResult,
   ThreadMaintenanceResultType,
   WatchedThread,
-} from "../../interfaces/thread";
-import { SERVICE_KEYS, serviceRegistry } from "../../services";
-import { ErrorSeverity, handleApiError } from "../errorSystem";
-import { rateLimitManager } from "../rateLimitManager";
+} from "../../interfaces/thread"
+import { SERVICE_KEYS, serviceRegistry } from "../../services"
+import { ErrorSeverity, handleApiError } from "../errorSystem"
+import { logger } from "../logger"
+import { rateLimitManager } from "../rateLimitManager"
 import {
   bumpStuckThread,
   handleMessageFallback,
   recoverInconsistentThread,
   updateArchiveDuration,
-} from "../threadActions";
-import { threadManager } from "../threadManager";
+} from "../threadActions"
+import { threadManager } from "../threadManager"
 import {
   checkEffectiveThreadPermissions,
   diagnoseThreadPermissions,
@@ -28,7 +28,7 @@ import {
   MAX_BUMP_ATTEMPTS,
   problemThreads,
   threadNeedsMaintenance,
-} from "../threadUtils";
+} from "../threadUtils"
 
 // Change from Collection to Map for better semantic meaning - this isn't a Discord Collection
 export const threadHealthRegistry = new Map<string, ThreadHealthData>();
@@ -50,7 +50,7 @@ export interface ThreadHealthData {
 /**
  * Register a thread for health monitoring
  */
-export function registerThreadForHealthMonitoring(thread: ThreadChannel): void {
+export async function registerThreadForHealthMonitoring(thread: ThreadChannel): Promise<void> {
   if (!thread || !thread.id) {
     logger.warn("Attempted to register invalid thread for health monitoring");
     return;
@@ -62,7 +62,7 @@ export function registerThreadForHealthMonitoring(thread: ThreadChannel): void {
     return;
   }
 
-  const client = serviceRegistry.get(SERVICE_KEYS.CLIENT);
+  const client = await serviceRegistry.get(SERVICE_KEYS.CLIENT);
   const shardId = client.shard?.ids[0] ?? 0;
 
   // Check if the thread is already being watched
@@ -179,7 +179,7 @@ export async function monitorThreadHealth(): Promise<void> {
   for (const entry of needsMaintenance) {
     try {
       // Fetch the thread
-      const client = serviceRegistry.get(SERVICE_KEYS.CLIENT);
+      const client = await serviceRegistry.get(SERVICE_KEYS.CLIENT);
       const thread = (await client.channels
         .fetch(entry.id)
         .catch(() => null)) as ThreadChannel | null;
@@ -225,7 +225,7 @@ export async function monitorThreadHealth(): Promise<void> {
         const MAX_THREADS_TO_CHECK = 50;
         if (problematicThreads.length > MAX_THREADS_TO_CHECK) break;
         // Fetch the thread
-        const client = serviceRegistry.get(SERVICE_KEYS.CLIENT);
+        const client = await serviceRegistry.get(SERVICE_KEYS.CLIENT);
         const thread = (await client.channels
           .fetch(threadId)
           .catch(() => null)) as ThreadChannel | null;
@@ -304,24 +304,32 @@ export async function ensureVisibleThreads(
     };
   }
 
-  // First filter by shard ID
-  const shardFilteredThreads = watchedThreads.filter((thread) => {
+  // First filter by shard ID - using async/await properly
+  const shardFilteredThreads = new Collection<string, WatchedThread>()
+
+  for (const [threadId, thread] of watchedThreads.entries()) {
     // Skip unwatched threads
-    if (!thread.watching) return false;
+    if (!thread.watching) continue
+
+    // Default to including the thread
+    let includeThread = true;
 
     // If activeShardIds is provided, filter by thread's shard directly
     if (activeShardIds?.length) {
       // Use stored shardId if available, otherwise fall back to guild lookup
       if (thread.shardId !== undefined) {
-        return activeShardIds.includes(thread.shardId);
+        includeThread = activeShardIds.includes(thread.shardId);
       } else {
         // Legacy fallback for threads that don't have shardId yet
         try {
-          if (!serviceRegistry.isAvailable(SERVICE_KEYS.CLIENT)) return false;
-          const client = serviceRegistry.get(SERVICE_KEYS.CLIENT);
-          const guild = client.guilds.cache.get(thread.server);
-          if (!guild || !activeShardIds.includes(guild.shardId)) {
-            return false;
+          if (!serviceRegistry.isAvailable(SERVICE_KEYS.CLIENT)) {
+            includeThread = false
+          } else {
+            const client = await serviceRegistry.get(SERVICE_KEYS.CLIENT)
+            const guild = client.guilds.cache.get(thread.server)
+            if (!guild || !activeShardIds.includes(guild.shardId)) {
+              includeThread = false
+            }
           }
         } catch {
           // If we can't determine the shard, include it by default
@@ -329,8 +337,10 @@ export async function ensureVisibleThreads(
       }
     }
 
-    return true;
-  });
+    if (includeThread) {
+      shardFilteredThreads.set(threadId, thread)
+    }
+  }
 
   // Now filter for threads that actually need maintenance using the existing threadNeedsMaintenance function
   const threadsNeedingMaintenance = shardFilteredThreads.filter(threadNeedsMaintenance);
@@ -480,11 +490,11 @@ async function processThreadMaintenance(threadId: string): Promise<ThreadMainten
         const newDueArchive = Math.floor(Date.now() / 1000) + autoArchiveMinutes * 60;
 
         // Update in database
-        const db = serviceRegistry.get(SERVICE_KEYS.DATABASE);
+        const db = await serviceRegistry.get(SERVICE_KEYS.DATABASE);
         await db.updateDueArchive(threadId, newDueArchive);
 
         // Also update in memory
-        const threadManager = serviceRegistry.get(SERVICE_KEYS.THREAD_MANAGER);
+        const threadManager = await serviceRegistry.get(SERVICE_KEYS.THREAD_MANAGER);
         const watchedThread = threadManager.getWatchedThreads().get(threadId);
         if (watchedThread) {
           watchedThread.dueArchive = newDueArchive;
@@ -539,7 +549,7 @@ async function getServerBehaviorSetting(guildId?: string): Promise<boolean> {
   try {
     // Use service registry to get UserSettings instance
     if (serviceRegistry.isAvailable(SERVICE_KEYS.USER_SETTINGS)) {
-      const userSettings = serviceRegistry.get(SERVICE_KEYS.USER_SETTINGS);
+      const userSettings = await serviceRegistry.get(SERVICE_KEYS.USER_SETTINGS);
 
       try {
         // Attempt to get the setting directly
@@ -822,7 +832,7 @@ export async function getPossiblyArchivedThreads(channelIds: string[]): Promise<
         continue;
       }
 
-      const client = serviceRegistry.get(SERVICE_KEYS.CLIENT);
+      const client = await serviceRegistry.get(SERVICE_KEYS.CLIENT);
       const channel = (await client.channels.fetch(channelId)) as TextChannel;
       if (!channel) continue;
 
@@ -972,7 +982,7 @@ async function attemptThreadRecovery(thread: ThreadChannel): Promise<ThreadBumpR
 
     // Try direct API method if cycling didn't help
     try {
-      const client = serviceRegistry.get(SERVICE_KEYS.CLIENT);
+      const client = await serviceRegistry.get(SERVICE_KEYS.CLIENT);
       await client.rest.patch(`/channels/${thread.id}`, {
         body: { archived: false },
       });
@@ -1033,7 +1043,7 @@ async function fetchThreadWithRetry(threadId: string): Promise<ThreadChannel | n
         return null;
       }
 
-      const client = serviceRegistry.get(SERVICE_KEYS.CLIENT);
+      const client = await serviceRegistry.get(SERVICE_KEYS.CLIENT);
       return await client.channels
         .fetch(threadId)
         .then((channel) => channel as ThreadChannel)
@@ -1061,7 +1071,7 @@ async function getBumpMessage(guildId?: string): Promise<string> {
   }
 
   try {
-    const userSettings = serviceRegistry.get(SERVICE_KEYS.USER_SETTINGS);
+    const userSettings = await serviceRegistry.get(SERVICE_KEYS.USER_SETTINGS);
     const customMessage = await userSettings.getSetting(guildId, "BUMP_MESSAGE");
     return customMessage || defaultMessage;
   } catch {

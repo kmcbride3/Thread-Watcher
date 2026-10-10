@@ -8,22 +8,21 @@ import {
   SlashCommandBuilder,
   ThreadAutoArchiveDuration,
   ThreadChannel,
-} from "discord.js";
-import { logger } from "../../index";
-import { Command } from "../../interfaces/command";
-import { EmbedBuilderFunction } from "../../utilities/embedUtils";
-import { ErrorSeverity, handleApiError, handleCommandError } from "../../utilities/errorSystem";
-import { formatArchiveDuration } from "../../utilities/formatUtils";
-import { StatusType } from "../../utilities/logger";
-import { rateLimitManager } from "../../utilities/rateLimitManager";
-import { addThread, removeThread, setArchive } from "../../utilities/threadActions";
-import { threadManager } from "../../utilities/threadManager";
+} from "discord.js"
+import { Command } from "../../interfaces/command"
+import { EmbedBuilderFunction } from "../../utilities/embedUtils"
+import { ErrorSeverity, handleApiError, handleCommandError } from "../../utilities/errorSystem"
+import { formatArchiveDuration } from "../../utilities/formatUtils"
+import { logger, StatusType } from "../../utilities/logger"
+import { rateLimitManager } from "../../utilities/rateLimitManager"
+import { addThread, removeThread, setArchive } from "../../utilities/threadActions"
+import { threadManager } from "../../utilities/threadManager"
 import {
   createThreadValidationErrorHandler,
   dueArchiveTimestamp,
   THREAD_CHANNEL_TYPES,
   validateThread,
-} from "../../utilities/threadUtils";
+} from "../../utilities/threadUtils"
 
 interface ThreadWatchOptions {
   channel_types: number[];

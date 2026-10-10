@@ -1,6 +1,6 @@
-import { Events, Guild } from "discord.js";
-import { logger } from "../index";
-import { clearGuild } from "../utilities/threadActions";
+import { Events, Guild } from "discord.js"
+import { logger } from "../utilities/logger"
+import { clearGuild } from "../utilities/threadActions"
 
 export default {
   name: Events.GuildDelete,

@@ -6,17 +6,19 @@ import {
   ButtonStyle,
   ColorResolvable,
   CommandInteraction,
+  ComponentType,
   EmbedBuilder,
+  InteractionCollector,
   MessageActionRowComponentBuilder,
   MessageComponentInteraction,
   MessageFlagsBitField,
-} from "discord.js";
-import { config } from "../index";
-import { StatusType } from "./logger";
+} from "discord.js"
+import { config } from "../index"
+import { StatusType } from "./logger"
 
 // Fix import path for Chunkable
-import Chunkable from "./Chunkable";
-import { isInteractionReplyable, safeSendInteractionReply } from "./interactionUtils";
+import Chunkable from "./Chunkable"
+import { isInteractionReplyable, safeSendInteractionReply } from "./interactionUtils"
 
 /**
  * Unified options for embed builders across the application
@@ -149,7 +151,6 @@ export function formatArrayToFields(
           name: isHeaderField ? currentValue : "\u200B", // Empty name for non-headers
           value: isHeaderField ? "\u200B" : currentValue, // Empty value for headers
         });
-        currentValue = "";
       }
 
       // Set the current value to the header
@@ -393,9 +394,9 @@ export async function createPaginatedEmbedObject<T>({
     label: string;
     style: ButtonStyle;
   };
-}): Promise<unknown> {
-  if (!isInteractionReplyable(interaction)) {
-    return;
+  }): Promise<InteractionCollector<ButtonInteraction> | null> {
+  if (!isInteractionReplyable(interaction, "Paginated Embed Object")) {
+    return null;
   }
 
   // Create pagination chunks
@@ -428,17 +429,21 @@ export async function createPaginatedEmbedObject<T>({
     flags,
   });
 
-  if (pages <= 1) return;
+  if (pages <= 1) return null;
 
   // Set up collector for pagination
-  const filter = (i: MessageComponentInteraction) => i.customId === "prev" || i.customId === "next";
+  const filter = (i: MessageComponentInteraction) =>
+    (i.customId === "prev" || i.customId === "next") && i.user.id === interaction.user.id;
 
-  const collector = interaction.channel?.createMessageComponentCollector({
+  const collector = interaction.channel?.createMessageComponentCollector<ComponentType.Button>({
     filter,
     time: timeout,
+    componentType: ComponentType.Button,
   });
 
-  collector?.on("collect", async (i) => {
+  if (!collector) return null
+
+  collector.on("collect", async (i) => {
     // Handle navigation
     if (i.customId === "prev" && currentPage > 0) {
       currentPage--;
@@ -461,7 +466,7 @@ export async function createPaginatedEmbedObject<T>({
     });
   });
 
-  collector?.on("end", async () => {
+  collector.on("end", async () => {
     // Disable buttons when collector expires
     back.setDisabled(true);
     next.setDisabled(true);

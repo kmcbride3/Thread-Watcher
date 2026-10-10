@@ -111,19 +111,14 @@ export function validateValue(
 
   const validator = validators.find((a) => {
     // Check if key directly matches any matchKey
-    if (
-      a.matchKeys.some((matchKey) => {
-        if (typeof matchKey === "string") {
-          return matchKey === key;
-        } else if (matchKey instanceof RegExp) {
-          return matchKey.test(key);
-        }
-        return false;
-      })
-    ) {
-      return true;
-    }
-    return false;
+    return a.matchKeys.some((matchKey) => {
+      if (typeof matchKey === "string") {
+        return matchKey === key;
+      } else if (matchKey instanceof RegExp) {
+        return matchKey.test(key);
+      }
+      return false;
+    });
   });
 
   if (!validator) return value;

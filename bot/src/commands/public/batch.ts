@@ -12,21 +12,20 @@ import {
   Role,
   SlashCommandBuilder,
   ThreadChannel,
-} from "discord.js";
-import TwButton from "../../components/Button";
-import TwModal from "../../components/Modal";
-import TwStringSelect from "../../components/StringSelect";
-import { logger } from "../../index";
-import { Command } from "../../interfaces/command";
-import { SERVICE_KEYS, serviceRegistry } from "../../services";
-import Chunkable from "../../utilities/Chunkable";
-import { EmbedBuilderFunction } from "../../utilities/embedUtils";
-import { ErrorSeverity, handleApiError, handleCommandError } from "../../utilities/errorSystem";
-import { StatusType } from "../../utilities/logger";
-import { rateLimitManager } from "../../utilities/rateLimitManager";
-import { safeObjectAccess, safeRegExp } from "../../utilities/securityUtils";
-import { refreshThreadData, updateArchiveDuration } from "../../utilities/threadActions";
-import { threadManager } from "../../utilities/threadManager";
+} from "discord.js"
+import TwButton from "../../components/Button"
+import TwModal from "../../components/Modal"
+import TwStringSelect from "../../components/StringSelect"
+import { Command } from "../../interfaces/command"
+import { SERVICE_KEYS, serviceRegistry } from "../../services"
+import Chunkable from "../../utilities/Chunkable"
+import { EmbedBuilderFunction } from "../../utilities/embedUtils"
+import { ErrorSeverity, handleApiError, handleCommandError } from "../../utilities/errorSystem"
+import { logger, StatusType } from "../../utilities/logger"
+import { rateLimitManager } from "../../utilities/rateLimitManager"
+import { safeObjectAccess, safeRegExp } from "../../utilities/securityUtils"
+import { refreshThreadData, updateArchiveDuration } from "../../utilities/threadActions"
+import { threadManager } from "../../utilities/threadManager"
 import {
   dueArchiveTimestamp,
   getAllThreads,
@@ -34,7 +33,7 @@ import {
   THREAD_CAPABLE_CHANNEL_TYPES,
   threadShouldBeWatched,
   validateThreadCapableChannel,
-} from "../../utilities/threadUtils";
+} from "../../utilities/threadUtils"
 
 type ActionType = "watch" | "unwatch" | "toggle" | "inaction";
 
@@ -412,7 +411,7 @@ const batchCommand: Command = {
                 return;
               }
 
-              const db = serviceRegistry.get(SERVICE_KEYS.DATABASE);
+              const db = await serviceRegistry.get(SERVICE_KEYS.DATABASE);
               const alreadyExists = (await db.getChannels(parent.id)).find(
                 (t) => t.id === parent.id
               );

@@ -1,7 +1,7 @@
-import { REST, RateLimitData, RequestMethod } from "discord.js";
-import { logger } from "../index";
-import { getConfig } from "./cnf/index";
-import { rateLimitManager } from "./rateLimitManager";
+import { REST, RateLimitData, RequestMethod } from "discord.js"
+import { getConfig } from "./cnf/index"
+import { logger } from "./logger"
+import { rateLimitManager } from "./rateLimitManager"
 
 // Create a enhanced REST client for efficient API usage
 let restClient: REST | null = null;

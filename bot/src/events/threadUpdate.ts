@@ -1,15 +1,15 @@
-import { Events, ThreadAutoArchiveDuration, ThreadChannel } from "discord.js";
-import { logger } from "../index";
-import { SERVICE_KEYS, serviceRegistry } from "../services";
-import { ErrorSeverity, handleApiError } from "../utilities/errorSystem";
-import { rateLimitManager } from "../utilities/rateLimitManager";
-import { addThread, bumpAutoTime, removeThread, setArchive } from "../utilities/threadActions";
-import { threadManager } from "../utilities/threadManager";
+import { Events, ThreadAutoArchiveDuration, ThreadChannel } from "discord.js"
+import { SERVICE_KEYS, serviceRegistry } from "../services"
+import { ErrorSeverity, handleApiError } from "../utilities/errorSystem"
+import { logger } from "../utilities/logger"
+import { rateLimitManager } from "../utilities/rateLimitManager"
+import { addThread, bumpAutoTime, removeThread, setArchive } from "../utilities/threadActions"
+import { threadManager } from "../utilities/threadManager"
 import {
   dueArchiveTimestamp,
   isThreadChannel,
   threadShouldBeWatched,
-} from "../utilities/threadUtils";
+} from "../utilities/threadUtils"
 
 export default {
   name: Events.ThreadUpdate,
@@ -32,7 +32,7 @@ export default {
           null,
           async () => {
             // Use serviceRegistry for safer database access with fallback handling
-            const db = serviceRegistry.get(SERVICE_KEYS.DATABASE, {
+            const db = await serviceRegistry.get(SERVICE_KEYS.DATABASE, {
               errorContext: `ThreadUpdate:getDatabase(${newThread.id})`,
               reportErrors: true,
             });

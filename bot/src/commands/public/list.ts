@@ -12,23 +12,24 @@ import {
   MessageFlagsBitField,
   PermissionFlagsBits,
   SlashCommandBuilder,
-} from "discord.js";
-import TwButton from "../../components/Button";
-import { config, logger } from "../../index";
-import { Command } from "../../interfaces/command";
-import { SERVICE_KEYS, serviceRegistry } from "../../services";
-import Chunkable from "../../utilities/Chunkable";
-import { handleApiError, handleCommandError } from "../../utilities/errorSystem";
-import { formatNumber } from "../../utilities/formatUtils";
-import { rateLimitManager } from "../../utilities/rateLimitManager";
-import { threadManager } from "../../utilities/threadManager";
+} from "discord.js"
+import TwButton from "../../components/Button"
+import { config } from "../../index"
+import { Command } from "../../interfaces/command"
+import { SERVICE_KEYS, serviceRegistry } from "../../services"
+import Chunkable from "../../utilities/Chunkable"
+import { handleApiError, handleCommandError } from "../../utilities/errorSystem"
+import { formatNumber } from "../../utilities/formatUtils"
+import { logger } from "../../utilities/logger"
+import { rateLimitManager } from "../../utilities/rateLimitManager"
+import { threadManager } from "../../utilities/threadManager"
 import {
   getDirectTag,
   isThreadCapableChannel,
   isThreadChannel,
   THREAD_CHANNEL_TYPES,
   ThreadCapableChannel,
-} from "../../utilities/threadUtils";
+} from "../../utilities/threadUtils"
 
 interface field {
   name: string;
@@ -77,7 +78,8 @@ const fitIntoFields = (
      */
     if (iLength > MAXLENGTH) {
       fields.push({
-        name: `${name} ${fields.length + 1}`,
+        // Only add numbering if there will be multiple fields
+        name: values.length > MAXLENGTH ? `${name} ${fields.length + 1}` : name,
         value: buff.substring(0, buff.length - 2),
       });
       buff = `${value}, `;
@@ -87,7 +89,8 @@ const fitIntoFields = (
   }
 
   fields.push({
-    name: `${name} ${fields.length + 1}`,
+    // Only add numbering if there are multiple fields
+    name: fields.length > 0 ? `${name} ${fields.length + 1}` : name,
     value: buff.substring(0, buff.length - 2),
   });
 
@@ -112,7 +115,7 @@ const getChannels = async (interaction: ChatInputCommandInteraction) => {
       }
 
       // Get database with proper error handling
-      const db = serviceRegistry.get(SERVICE_KEYS.DATABASE, {
+      const db = await serviceRegistry.get(SERVICE_KEYS.DATABASE, {
         errorContext: `List Command - Channel Data for ${interaction.guildId}`,
       });
 
@@ -122,13 +125,11 @@ const getChannels = async (interaction: ChatInputCommandInteraction) => {
         try {
           const channel = await interaction.client.channels.fetch(channelData.id).catch(() => null);
           if (channel && "guild" in channel) {
-            if (
-              !(
-                (isThreadCapableChannel(channel as ThreadCapableChannel) ||
-                  channel instanceof CategoryChannel) &&
-                interaction.member instanceof GuildMember
-              )
-            )
+            if (!(
+              (isThreadCapableChannel(channel as ThreadCapableChannel) ||
+                channel instanceof CategoryChannel) &&
+              interaction.member instanceof GuildMember
+            ))
               break;
 
             if (channel.permissionsFor(interaction.member).has(PermissionFlagsBits.ViewChannel)) {
@@ -311,8 +312,8 @@ const listCommand: Command = {
       if (fields.length === 0) {
         const nothingEmbed = new EmbedBuilder()
           .setColor(config?.style?.info?.color as ColorResolvable)
-          .setTitle(`No watched content found`)
-          .setDescription(`No threads or channels are being watched in this server.`);
+          .setTitle("No watched content found")
+          .setDescription("No threads or channels are being watched in this server.");
 
         await interaction.editReply({ embeds: [nothingEmbed] });
         return;
@@ -343,7 +344,7 @@ const listCommand: Command = {
 
         // Update title based on what's being shown
         if (showVar === "both") {
-          embed.setTitle(`Watched Threads and Channels`);
+          embed.setTitle("Watched Threads and Channels");
         } else {
           embed.setTitle(`${showVar === "channel" ? "Channels" : "Threads"} being watched`);
         }

@@ -26,3 +26,5 @@ data/backups/**/*/
 data/locks/**/*/
 data/logs/**/*/
 data/data.db
+bot/data/locks/**/*
+bot/data/logs/**/*

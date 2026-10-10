@@ -9,6 +9,7 @@
     "outDir": "./dist/",
     "strict": true,
     "moduleResolution": "node", // Must match module setting
+    "ignoreDeprecations": "6.0",
     "importHelpers": true,
     "experimentalDecorators": true,
     "esModuleInterop": true,

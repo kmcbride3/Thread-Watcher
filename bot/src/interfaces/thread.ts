@@ -52,12 +52,7 @@ export interface ThreadMaintenanceResult {
  * Valid thread maintenance result types
  */
 export type ThreadMaintenanceResultType =
-  | "kept-active"
-  | "not-found"
-  | "no-permissions"
-  | "failed-to-activate"
-  | "message-sent"
-  | "error";
+  "kept-active" | "not-found" | "no-permissions" | "failed-to-activate" | "message-sent" | "error";
 
 /**
  * Response from an individual thread maintenance operation

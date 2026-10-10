@@ -1,9 +1,10 @@
-import { Client } from "discord.js";
-import { logger } from "../index";
-import { ErrorSeverity, handleApiError } from "./errorSystem";
-import { safeLog } from "./logger";
-import { getShardId, isShard } from "./processState";
-import { ProcessType, removeProcessLock } from "./startup";
+import { Client } from "discord.js"
+import { SERVICE_KEYS, serviceRegistry } from "../services"
+import { ErrorSeverity, handleApiError } from "./errorSystem"
+import { EventManager } from "./eventManager"
+import { logger, safeLog } from "./logger"
+import { getShardId, isShard } from "./processState"
+import { ProcessType, removeProcessLock } from "./startup"
 
 /**
  * Priority levels for shutdown tasks
@@ -99,6 +100,8 @@ let shutdownInProgress = false;
 let lastShutdownTime = 0;
 let handlerInitialized = false;
 let signalReceivedTime = 0;
+let consoleSigintDisplayed = false; // Track console output to avoid duplication
+let lastSignalTime = 0; // Track time between signals to prevent duplicates
 // Use the default values directly
 const SHUTDOWN_COOLDOWN = DEFAULT_TIMEOUTS.SHUTDOWN_COOLDOWN;
 const MIN_EXIT_DELAY = DEFAULT_TIMEOUTS.MIN_EXIT_DELAY;
@@ -108,10 +111,14 @@ let clearedTimers = false;
 let exitTimeoutSet = false;
 let lastLoggedReason = "";
 let exitTimeoutId: NodeJS.Timeout | null = null; // Track the timeout ID
+const pendingExitPromise = new Promise<never>(() => undefined);
 
 // Module-level arrays to hold registered timers
 const globalActiveIntervals: NodeJS.Timeout[] = [];
 const globalActiveTimeouts: NodeJS.Timeout[] = [];
+
+// Module-level singleton instance for the shutdown manager (declaration moved up)
+let shutdownManagerInstance: ShutdownManager | null = null;
 
 /**
  * Fallback exit function when shutdownManager isn't available
@@ -123,13 +130,11 @@ const globalActiveTimeouts: NodeJS.Timeout[] = [];
  */
 export function exitProcess(exitCode: number, reason: string, delayMs = 200): Promise<never> {
   try {
+    logger.debug("Exit process called", "EXIT");
+
     // Block duplicate exit attempts
     if (exitTimeoutSet && exitTimeoutId) {
-      logger.debug(`Exit already in progress, ignoring duplicate exitProcess call`, "EXIT");
-      return new Promise((resolve) => {
-        // This promise never resolves since the existing timeout will exit the process
-        setTimeout(() => resolve(process.exit(exitCode)), 30000);
-      });
+      return pendingExitPromise;
     }
 
     // Immediately flag that shutdown is in progress to block duplicate calls
@@ -231,30 +236,36 @@ export function exitProcess(exitCode: number, reason: string, delayMs = 200): Pr
           // Clean up process locks on exit
           if (isShard()) {
             const shardIdNum = parseInt(shardId, 10);
+            logger.debug(`Removing shard ${shardIdNum} process lock due to shutdown`, logContext);
             removeProcessLock(ProcessType.SHARD, shardIdNum);
-            logger.debug(`Removed shard ${shardId} process lock due to shutdown`, logContext);
           } else {
             removeProcessLock(ProcessType.MAIN);
-            logger.debug(`Removed main process lock due to shutdown`, logContext);
+            logger.debug("Removed main process lock due to shutdown", logContext);
           }
-        } catch {
-          // Silently ignore errors during cleanup
+        } catch (err) {
+          logger.error(`Error during process lock cleanup: ${err}`);
         }
 
         // Finally exit the process
         logger.debug(`Process exit with code ${exitCode} - cleaning up`, logContext);
+        process.exitCode = exitCode;
+
+        // skipcq: JS-0263
         process.exit(exitCode);
       }, finalDelayMs);
     }
 
-    // This promise never resolves, as process.exit will terminate execution
-    return new Promise((resolve) => {
-      setTimeout(() => resolve(process.exit(exitCode)), finalDelayMs + 1000);
+    // Set a hard timeout in case our nice exit doesn't work
+    return new Promise<never>(() => {
+      setTimeout(() => {
+        process.exitCode = exitCode;
+        process.exit(exitCode);
+      }, finalDelayMs + 1000);
     });
   } catch (e) {
     console.error("Critical error during exit:", e);
     process.kill(process.pid, "SIGKILL");
-    throw new Error("Process termination failed");
+    throw new Error("Process termination failed", { cause: e });
   }
 }
 
@@ -273,23 +284,23 @@ export interface ShutdownManager {
   ): void;
   registerInterval(intervalId: NodeJS.Timeout): NodeJS.Timeout;
   registerTimeout(timeoutId: NodeJS.Timeout): NodeJS.Timeout;
-  getRegisteredIntervals(): NodeJS.Timeout[]; // Add this method
-  getRegisteredTimeouts(): NodeJS.Timeout[]; // Add this method
+  getRegisteredIntervals(): NodeJS.Timeout[];
+  getRegisteredTimeouts(): NodeJS.Timeout[];
   enterMaintenanceMode(): void;
   exitMaintenanceMode(): void;
   getUptime(): number;
   shutdown(exitCode?: number, reason?: string): Promise<never>;
 }
 
-// Module-level singleton instance for the shutdown manager
-let shutdownManagerInstance: ShutdownManager | null = null;
-
 /**
  * Create a shutdown manager instance
  * @param client Discord client instance
  * @returns ShutdownManager instance
  */
-export function createShutdownManager(client: Client): ShutdownManager {
+export function createShutdownManager(
+  client: Client,
+  onShutdownSignal?: (signal: string) => void | Promise<void>
+): ShutdownManager {
   if (shutdownManagerInstance) {
     safeLog("trace", "Using existing shutdown manager instance", "SHUTDOWN");
     return shutdownManagerInstance;
@@ -333,142 +344,87 @@ export function createShutdownManager(client: Client): ShutdownManager {
       return; // Don't set up handlers multiple times
     }
 
+    // Ensure we don't exceed the max listeners warning threshold
+    process.setMaxListeners(20);
     handlerInitialized = true;
-    safeLog("trace", "Initializing signal handlers", "SHUTDOWN");
 
-    // Track if we've already started shutdown to avoid duplicates
-    let handlerShutdownInitiated = false;
-
-    // For signal deduplication
-    let lastSignalTime = 0;
-    const SIGNAL_COOLDOWN = getTimeoutValue("SIGNAL_COOLDOWN");
-
-    // Handle SIGINT (Ctrl+C)
-    process.on("SIGINT", () => {
+    // Use a shared handler for both SIGINT and SIGTERM to reduce code duplication
+    const signalHandler = (signal: string) => {
       global.isShuttingDown = true;
 
       // Deduplicate signals that come too quickly
       const now = Date.now();
-      if (now - lastSignalTime < SIGNAL_COOLDOWN) {
+      if (now - lastSignalTime < getTimeoutValue("SIGNAL_COOLDOWN")) {
         return; // Ignore rapid duplicate signals
       }
       lastSignalTime = now;
 
-      // To avoid the double message, only log once
-      if (signalReceivedTime === 0) {
-        signalReceivedTime = now;
-        console.log("\n\nReceived SIGINT (Ctrl+C) - Shutting down Thread-Watcher...");
+      // Only log once in console from main process
+      if (!consoleSigintDisplayed && !isShard()) {
+        consoleSigintDisplayed = true;
+        console.log(`\n\nReceived ${signal} - Shutting down Thread-Watcher...`);
       }
 
-      // Special handling for shards
+      // Only log warning once per process
+      if (signalReceivedTime === 0) {
+        signalReceivedTime = now;
+        logger.warn(`Received ${signal} signal`);
+      }
+
+      // Special handling for shards - let parent process coordinate shutdown
       if (isShard()) {
         const shardId = process.env.SHARD_ID || "0";
-        safeLog(
-          "trace",
-          `Shard ${shardId} received SIGINT - waiting for parent coordination`,
+        logger.debug(
+          `Shard ${shardId} received ${signal} - waiting for parent coordination`,
           "SHUTDOWN"
         );
-
-        // Shards should wait for the main process to tell them to shut down
-        // This prevents race conditions in cleanup
-        safeLog(
-          "trace",
-          `Received SIGINT directly, waiting for main process coordination`,
-          `SHARD ${shardId}`
-        );
-        safeLog("warn", "Received SIGINT signal");
-
-        // Only if we're a shard, don't proceed with our own shutdown sequence
         return;
       }
 
-      if (handlerShutdownInitiated || shutdownInProgress) {
-        return; // Already shutting down, prevent duplicate calls
-      }
+      // For main process, initiate shutdown if not already in progress
+      if (shutdownInProgress) return;
 
-      handlerShutdownInitiated = true;
-      shutdownInProgress = true;
-
-      safeLog("warn", "Received SIGINT signal");
-
-      // Pass SIGINT message to the shutdown handler
-      shutdown(0, "SIGINT received");
-    });
-
-    // Handle SIGTERM (system termination request)
-    process.on("SIGTERM", () => {
-      global.isShuttingDown = true;
-
-      // Deduplicate signals that come too quickly
-      const now = Date.now();
-      if (now - lastSignalTime < SIGNAL_COOLDOWN) {
-        return; // Ignore rapid duplicate signals
-      }
-      lastSignalTime = now;
-
-      // To avoid the double message, only log once
-      if (signalReceivedTime === 0) {
-        signalReceivedTime = now;
-        console.log("\n\nReceived SIGTERM - Shutting down Thread-Watcher...");
-      }
-
-      // Special handling for shards
-      if (isShard()) {
-        const shardId = process.env.SHARD_ID || "0";
-        safeLog(
-          "trace",
-          `Shard ${shardId} received SIGTERM - waiting for parent to coordinate shutdown`,
-          "SHUTDOWN"
-        );
-
-        // Shards should wait for the main process
-        safeLog(
-          "trace",
-          `Received SIGTERM directly, waiting for main process coordination`,
-          `SHARD ${shardId}`
-        );
-        safeLog("warn", "Received SIGTERM signal");
-
-        // Only if we're a shard, don't proceed with our own shutdown sequence
+      if (onShutdownSignal) {
+        void Promise.resolve(onShutdownSignal(signal)).catch((error: unknown) => {
+          safeLog("error", `Shutdown signal handler failed: ${String(error)}`, "SHUTDOWN");
+          exitProcess(1, `Shutdown signal handler failed: ${String(error)}`);
+        });
         return;
       }
 
-      safeLog("warn", "Received SIGTERM signal");
-
-      // Continue with shutdown only in the main process
-      if (handlerShutdownInitiated || shutdownInProgress) {
-        return; // Already shutting down
-      }
-
-      handlerShutdownInitiated = true;
       shutdownInProgress = true;
-      shutdown(0, "SIGTERM received");
-    });
+      void shutdown(0, `${signal} received`);
+    };
+
+    // Register shared handler for both signals
+    process.on("SIGINT", () => signalHandler("SIGINT"));
+    process.on("SIGTERM", () => signalHandler("SIGTERM"));
 
     // Handle uncaught exceptions
     process.on("uncaughtException", (error) => {
-      if (handlerShutdownInitiated || shutdownInProgress) {
-        safeLog(
-          "error",
-          `Additional uncaught exception during shutdown: ${error.message}`,
-          "SHUTDOWN"
-        );
+      // Skip exit errors that are part of normal shutdown
+      if (error.name === "ProcessExit" && error.message.includes("Process exit with code")) {
         return;
       }
 
-      handlerShutdownInitiated = true;
-      safeLog("error", `Uncaught exception: ${error.message}`, "SHUTDOWN");
+      if (shutdownInProgress) {
+        logger.debug(`Additional uncaught exception during shutdown: ${error.message}`, "SHUTDOWN");
+        return;
+      }
+
+      shutdownInProgress = true;
+      logger.error(`Uncaught exception: ${error.message}`, "SHUTDOWN");
       if (error.stack) {
-        safeLog("error", `Stack trace: ${error.stack}`, "SHUTDOWN");
+        logger.debug(`Stack trace: ${error.stack}`, "SHUTDOWN");
       }
 
       shutdown(1, "Uncaught exception");
     });
 
-    // Just log unhandled rejections without shutting down
+    // Keep the unhandled rejection handler as is
     process.on("unhandledRejection", (reason) => {
       const reasonStr = reason instanceof Error ? reason.message : String(reason);
-      safeLog("error", `Unhandled promise rejection: ${reasonStr}`, "SHUTDOWN");
+      logger.error(`Unhandled promise rejection: ${reasonStr}`, "SHUTDOWN");
     });
   }
 
@@ -591,6 +547,7 @@ export function createShutdownManager(client: Client): ShutdownManager {
                 return result;
               } catch (error) {
                 safeLog("error", `Error in task ${task.name}: ${String(error)}`, "SHUTDOWN");
+                return null;
               }
             })
           );
@@ -602,7 +559,7 @@ export function createShutdownManager(client: Client): ShutdownManager {
 
       if (isShard() && shardId !== undefined) {
         removeProcessLock(ProcessType.SHARD, shardId);
-        safeLog("trace", `Removed process lock for shard ${shardId}`, "SHUTDOWN");
+        safeLog("trace", `Removed process lock for Shard ${shardId}`, "SHUTDOWN");
       } else {
         removeProcessLock(ProcessType.MAIN);
         safeLog("trace", "Removed process lock for main process", "SHUTDOWN");
@@ -736,7 +693,7 @@ export function createShutdownManager(client: Client): ShutdownManager {
         if (!globalActiveIntervals.includes(intervalId)) {
           globalActiveIntervals.push(intervalId);
         }
-        safeLog("trace", `Registered interval for shutdown cleanup`, "SHUTDOWN");
+        safeLog("trace", "Registered interval for shutdown cleanup", "SHUTDOWN");
       }
       return intervalId;
     },
@@ -749,17 +706,17 @@ export function createShutdownManager(client: Client): ShutdownManager {
         if (!globalActiveTimeouts.includes(timeoutId)) {
           globalActiveTimeouts.push(timeoutId);
         }
-        safeLog("trace", `Registered timeout for shutdown cleanup`, "SHUTDOWN");
+        safeLog("trace", "Registered timeout for shutdown cleanup", "SHUTDOWN");
       }
       return timeoutId;
     },
 
-    // New method to expose registered intervals
+    // Method to expose registered intervals
     getRegisteredIntervals(): NodeJS.Timeout[] {
       return getManagerIntervals();
     },
 
-    // New method to expose registered timeouts
+    // Method to expose registered timeouts
     getRegisteredTimeouts(): NodeJS.Timeout[] {
       return getManagerTimeouts();
     },
@@ -791,57 +748,124 @@ export function createShutdownManager(client: Client): ShutdownManager {
 }
 
 /**
+ * Get the shutdown manager instance
+ * Creates one if it doesn't exist
+ */
+export function getShutdownManager(client?: Client): ShutdownManager {
+  if (shutdownManagerInstance) {
+    return shutdownManagerInstance;
+  }
+
+  let clientToUse = client;
+
+  if (!clientToUse) {
+    // Try to get client from service registry
+    try {
+      if (serviceRegistry.isAvailable(SERVICE_KEYS.CLIENT)) {
+        clientToUse = serviceRegistry.getSync(SERVICE_KEYS.CLIENT);
+      }
+    } catch (err) {
+      safeLog("debug", `Error getting client from registry: ${err}`, "SHUTDOWN");
+    }
+
+    // If still no client, create minimal one
+    if (!clientToUse) {
+      clientToUse = new Client({ intents: [] });
+      safeLog("debug", "Created minimal client for shutdown manager", "SHUTDOWN");
+    }
+  }
+
+  const manager = createShutdownManager(clientToUse);
+
+  // Register in service registry if available
+  try {
+    if (!serviceRegistry.isAvailable(SERVICE_KEYS.SHUTDOWN_MANAGER)) {
+      serviceRegistry.register(SERVICE_KEYS.SHUTDOWN_MANAGER, manager);
+      safeLog("debug", "Registered shutdown manager in service registry", "SHUTDOWN");
+    }
+  } catch (err) {
+    safeLog("debug", `Failed to register shutdown manager: ${err}`, "SHUTDOWN");
+  }
+
+  return manager;
+}
+
+/**
  * Initialize shutdown handlers for the application (for shard processes)
  */
 export function initializeShutdownHandlers(isShardProcess = false): void {
+  // Ensure we don't exceed the max listeners warning threshold
+  process.setMaxListeners(20);
+
   // Add specific handling for shards
   if (isShardProcess) {
-    process.on("message", (message: unknown) => {
-      // Add more robust message validation with explicit type checking
-      if (!message || typeof message !== "object") {
-        return;
+    // Register shutdown handler through EventManager instead of direct messageRouter use
+    EventManager.addProcessHandler(
+      "message",
+      "shutdown-handler",
+      (message) => {
+        // Skip messages that aren't objects
+        if (!message || typeof message !== "object") {
+          return;
+        }
+
+        // Type guard with property checking
+        const msgObj = message as Record<string, unknown>;
+
+        // Only process SHUTDOWN messages
+        if (!("type" in msgObj) || msgObj.type !== "SHUTDOWN") {
+          return;
+        }
+
+        // Safely extract exit code with validation
+        let exitCode = 0;
+        if (
+          "code" in msgObj &&
+          typeof msgObj.code === "number" &&
+          Number.isInteger(msgObj.code) &&
+          msgObj.code >= 0 &&
+          msgObj.code <= 255
+        ) {
+          exitCode = msgObj.code as number;
+        }
+
+        // Safely extract reason with validation
+        let reason = "Requested by parent";
+        if ("reason" in msgObj && typeof msgObj.reason === "string") {
+          // Sanitize the reason string to prevent injection
+          reason = String(msgObj.reason).substring(0, 200).trim();
+        }
+
+        // Get shard ID for better logging
+        const shardId = process.env.SHARD_ID || "0";
+        safeLog(
+          "info",
+          `Shard ${shardId} received shutdown command from parent: ${reason}`,
+          "SHUTDOWN"
+        );
+
+        // Handle the shutdown via the normal exit process
+        if (!shutdownInProgress) {
+          shutdownInProgress = true;
+          exitProcess(exitCode, reason);
+        }
+      },
+      {
+        filter: (message) => {
+          if (typeof message !== "object" || message === null) return false;
+          const msg = message as Record<string, unknown>;
+          return "type" in msg && msg.type === "SHUTDOWN";
+        },
+        priority: 100, // Very high priority
       }
+    );
 
-      // Use type guard with proper property checking
-      const msgObj = message as Record<string, unknown>;
+    safeLog("trace", "Registered shutdown message handler", "SHUTDOWN");
 
-      // Validate the message has the expected shape
-      if (!("type" in msgObj) || msgObj.type !== "SHUTDOWN") {
-        return;
-      }
-
-      // Safely extract the code with validation
-      let exitCode = 0;
-      if (
-        "code" in msgObj &&
-        typeof msgObj.code === "number" &&
-        Number.isInteger(msgObj.code) &&
-        msgObj.code >= 0 &&
-        msgObj.code <= 255
-      ) {
-        exitCode = msgObj.code as number;
-      }
-
-      // Safely extract the reason with validation
-      let reason = "Requested by parent";
-      if ("reason" in msgObj && typeof msgObj.reason === "string") {
-        // Sanitize the reason string to prevent injection
-        reason = String(msgObj.reason).substring(0, 200).trim();
-      }
-
-      // Get the shard ID for better logging
-      const shardId = process.env.SHARD_ID || "0";
-      safeLog(
-        "info",
-        `Shard ${shardId} received shutdown command from parent: ${reason}`,
-        "SHUTDOWN"
-      );
-
-      // Don't directly call process.exit here - use the shutdown handler
-      if (!shutdownInProgress) {
-        shutdownInProgress = true;
-        exitProcess(exitCode, reason);
-      }
+    // Clean up handler on exit
+    process.once("exit", () => {
+      EventManager.removeProcessHandler("message", "shutdown-handler");
+      safeLog("trace", "Cleaned up shutdown message handler on exit", "SHUTDOWN");
     });
   }
 }

@@ -9,17 +9,17 @@ import {
   Interaction,
   MessageActionRowComponentBuilder,
   MessageFlagsBitField,
-} from "discord.js";
-import { getCommands } from "../bot";
-import { ButtonInteractionQueue } from "../components/Button";
-import { ModalInteractionQueue } from "../components/Modal";
-import { StringSelectInteractionQueue } from "../components/StringSelect";
-import { config, logger } from "../index";
-import { BuildBaseEmbedFunction, Command, baseEmbedOptions } from "../interfaces/command";
-import TwGenericComponent from "../interfaces/genericComponent";
-import { ErrorSeverity, handleApiError, handleCommandError } from "../utilities/errorSystem";
-import { StatusType, isValidStatusType } from "../utilities/logger";
-import { rateLimitManager } from "../utilities/rateLimitManager";
+} from "discord.js"
+import { getCommands } from "../bot"
+import { ButtonInteractionQueue } from "../components/Button"
+import { ModalInteractionQueue } from "../components/Modal"
+import { StringSelectInteractionQueue } from "../components/StringSelect"
+import { config } from "../index"
+import { BuildBaseEmbedFunction, Command, baseEmbedOptions } from "../interfaces/command"
+import TwGenericComponent from "../interfaces/genericComponent"
+import { ErrorSeverity, handleApiError, handleCommandError } from "../utilities/errorSystem"
+import { StatusType, isValidStatusType, logger } from "../utilities/logger"
+import { rateLimitManager } from "../utilities/rateLimitManager"
 
 const commands = getCommands();
 

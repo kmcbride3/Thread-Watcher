@@ -1,4 +1,4 @@
-import { logger } from "../index";
+import { logger } from "./logger"
 
 /**
  * Handle API errors with retry logic

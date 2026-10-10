@@ -1,17 +1,14 @@
-import { REST } from "@discordjs/rest";
-import { Collection, Routes } from "discord.js";
-import { readdirSync, statSync } from "fs";
-import path from "path";
-import { setCommand } from "../bot";
-import { config, logger } from "../index";
-import { Command } from "../interfaces/command";
-import { SERVICE_KEYS, serviceRegistry } from "../services";
-import { validateCommandOptions } from "./commandValidator";
-import { ErrorSeverity, handleApiError } from "./errorSystem";
+import { Collection } from "discord.js"
+import { readdirSync, statSync } from "fs"
+import path from "path"
+import { setCommand } from "../bot"
+import { Command } from "../interfaces/command"
+import { ErrorSeverity, handleApiError } from "./errorSystem"
+import { logger } from "./logger"
 
-// Store loaded commands
-const commands = new Collection<string, Command>();
-const devServerCommands = new Collection<string, Command>();
+// Store loaded commands - prefix with underscore to indicate intentionally unused
+const _commands = new Collection<string, Command>()
+const _devServerCommands = new Collection<string, Command>();
 
 /**
  * Get all command files with specific extensions from a directory (non-recursive)
@@ -181,88 +178,4 @@ export default async function loadCommands(): Promise<Collection<string, Command
   }
 
   return commands;
-}
-
-/**
- * Register commands with Discord API
- */
-export async function registerCommands(): Promise<void> {
-  if (!serviceRegistry.isAvailable(SERVICE_KEYS.CLIENT)) {
-    throw new Error("Client not available for command registration");
-  }
-
-  const client = serviceRegistry.get(SERVICE_KEYS.CLIENT);
-
-  logger.debug("Registering commands...", "COMMANDS");
-
-  try {
-    // Validate commands before registering
-    const validationErrors = validateCommandOptions(Array.from(commands.values()));
-    if (validationErrors.length > 0) {
-      logger.error("Command validation failed with the following errors:");
-      validationErrors.forEach((error) => {
-        logger.error(`- ${error.commandName}: ${error.message}`);
-      });
-      throw new Error("Command validation failed - check logs for details");
-    }
-
-    const rest = new REST({ version: "10" }).setToken(config.tokens.discord);
-
-    // Register global commands
-    if (commands.size > 0) {
-      logger.info(`Registering ${commands.size} commands globally`);
-
-      const commandData = commands.map((cmd) => cmd.data.toJSON());
-
-      await handleApiError(
-        "Failed to register global commands",
-        async () => {
-          await rest.put(Routes.applicationCommands(client.user?.id || config.clientID), {
-            body: commandData,
-          });
-          logger.done(`Successfully registered ${commands.size} global commands`);
-        },
-        {
-          retries: 3,
-          retryDelay: 60000, // 1 minute retry delay due to rate limits
-          context: "Global Command Registration",
-          reportAtSeverity: ErrorSeverity.HIGH,
-        }
-      );
-    }
-
-    // Register dev server commands
-    if (config.devServer && devServerCommands.size > 0) {
-      logger.info(`Registering ${devServerCommands.size} commands to development server`);
-
-      const devCommandData = devServerCommands.map((cmd) => cmd.data.toJSON());
-
-      await handleApiError(
-        "Failed to register development server commands",
-        async () => {
-          await rest.put(
-            Routes.applicationGuildCommands(client.user?.id || config.clientID, config.devServer),
-            { body: devCommandData }
-          );
-          logger.done(
-            `Successfully registered ${devServerCommands.size} development server commands`
-          );
-        },
-        {
-          retries: 3,
-          retryDelay: 30000, // 30 second retry delay
-          context: "Dev Server Command Registration",
-          reportAtSeverity: ErrorSeverity.MEDIUM,
-        }
-      );
-    }
-  } catch (error) {
-    logger.error(
-      `Command registration failed: ${error instanceof Error ? error.message : String(error)}`
-    );
-    if (error instanceof Error && error.stack) {
-      logger.debug(`Stack trace: ${error.stack}`);
-    }
-    throw error; // Re-throw for higher-level handling
-  }
 }

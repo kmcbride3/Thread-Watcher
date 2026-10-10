@@ -16,12 +16,18 @@ interface EventModule<K extends keyof ClientEvents> {
 
 // Cache to store loaded events with proper typing
 const eventCache = new Collection<string, { default: EventModule<keyof ClientEvents> }>();
+const clientsWithLoadedEvents = new WeakSet<Client>();
 
 /**
  * Loads all event handlers from the events directory
  */
 export default async function loadEvents(client: Client, logger: Log76): Promise<void> {
+  if (clientsWithLoadedEvents.has(client)) return;
+
   logger.trace("Loading events...");
+
+  // Set appropriate max listeners for the client
+  client.setMaxListeners(20);
 
   try {
     const eventsPath = path.join(__dirname, "../events");
@@ -41,15 +47,6 @@ export default async function loadEvents(client: Client, logger: Log76): Promise
         context: "Event Directory Loading",
       }
     );
-
-    // Clear existing event listeners if we're reloading
-    const existingEvents = client.eventNames();
-    existingEvents.forEach((event) => {
-      if (typeof event === "string") {
-        client.removeAllListeners(event);
-        logger.trace(`Removed existing listeners for event: ${event}`);
-      }
-    });
 
     // Track loaded event count for logging
     let loadedCount = 0;
@@ -123,6 +120,7 @@ export default async function loadEvents(client: Client, logger: Log76): Promise
     });
 
     await Promise.all(loadPromises);
+    clientsWithLoadedEvents.add(client);
 
     logger.trace(
       `Loaded ${loadedCount} event handlers ${skippedCount > 0 ? `(${skippedCount} skipped)` : ""}`

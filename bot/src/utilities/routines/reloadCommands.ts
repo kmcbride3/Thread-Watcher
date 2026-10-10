@@ -1,7 +1,7 @@
-import { getCommands } from "../../bot";
-import { logger } from "../../index";
-import { ErrorSeverity, handleApiError } from "../errorSystem";
-import loadCommands from "../loadCommands";
+import { getCommands } from "../../bot"
+import { ErrorSeverity, handleApiError } from "../errorSystem"
+import loadCommands from "../loadCommands"
+import { logger } from "../logger"
 
 const commands = getCommands();
 

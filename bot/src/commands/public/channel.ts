@@ -46,7 +46,7 @@ const channelCommand: Command = {
         return;
       }
 
-      const db = serviceRegistry.get(SERVICE_KEYS.DATABASE, {
+      const db = await serviceRegistry.get(SERVICE_KEYS.DATABASE, {
         errorContext: `Channel Command - ${command}`,
       });
 

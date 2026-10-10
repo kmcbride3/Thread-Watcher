@@ -1,15 +1,15 @@
-import { ActivityType, Client, Events } from "discord.js";
-import { logger } from "../index";
-import { ThreadData } from "../interfaces/database";
-import { SERVICE_KEYS, serviceRegistry } from "../services";
-import { handleApiError } from "../utilities/apiErrorHandler";
-import { trackInitState } from "../utilities/debugUtils";
-import { ensureVisibleThreads } from "../utilities/routines/threadMonitoring";
+import { ActivityType, Client, Events } from "discord.js"
+import { ThreadData } from "../interfaces/database"
+import { SERVICE_KEYS, serviceRegistry } from "../services"
+import { handleApiError } from "../utilities/apiErrorHandler"
+import { trackInitState } from "../utilities/debugUtils"
+import { logger } from "../utilities/logger"
+import { ensureVisibleThreads } from "../utilities/routines/threadMonitoring"
 
 export default {
   name: Events.ClientReady,
   once: true,
-  execute(client: Client) {
+  async execute(client: Client) {
     logger.debug(`Logged in as ${client.user?.tag} to Discord`);
     trackInitState("Bot ready");
 
@@ -21,8 +21,8 @@ export default {
       return;
     }
 
-    const db = serviceRegistry.get(SERVICE_KEYS.DATABASE);
-    const threadManager = serviceRegistry.get(SERVICE_KEYS.THREAD_MANAGER);
+    const db = await serviceRegistry.get(SERVICE_KEYS.DATABASE)
+    const threadManager = await serviceRegistry.get(SERVICE_KEYS.THREAD_MANAGER);
     const threads = threadManager.getWatchedThreads();
 
     const promises: Promise<ThreadData[] | undefined>[] = [];

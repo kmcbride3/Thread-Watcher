@@ -1,6 +1,6 @@
-import { WebhookClient, EmbedBuilder, Colors } from "discord.js";
-import { getConfig } from "./cnf/index";
-import { logger } from "../index";
+import { Colors, EmbedBuilder, WebhookClient } from "discord.js"
+import { getConfig } from "./cnf/index"
+import { logger } from "./logger"
 
 export function reportError(error: Error, context = "Unknown context"): void {
   // Log the error locally first

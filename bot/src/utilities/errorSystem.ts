@@ -1,10 +1,10 @@
-import { codeBlock, CommandInteraction } from "discord.js";
-import { logger } from "../index";
-import { handleApiError as baseHandleApiError } from "./apiErrorHandler";
-import { EmbedBuilderFunction } from "./embedUtils";
-import { safeReplyWithError } from "./errorHandling";
-import { reportError as baseReportError } from "./errorReporter";
-import { truncate } from "./formatUtils";
+import { codeBlock, CommandInteraction } from "discord.js"
+import { handleApiError as baseHandleApiError } from "./apiErrorHandler"
+import { EmbedBuilderFunction } from "./embedUtils"
+import { safeReplyWithError } from "./errorHandling"
+import { reportError as baseReportError } from "./errorReporter"
+import { truncate } from "./formatUtils"
+import { logger } from "./logger"
 
 /**
  * Error severity levels for better error handling decisions

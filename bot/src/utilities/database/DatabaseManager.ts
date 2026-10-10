@@ -1,13 +1,12 @@
-import { logger } from "../../index";
-import { Database } from "../../interfaces/database";
-import { SERVICE_KEYS, serviceRegistry } from "../../services";
-import { ConfigFile } from "../cnf/index";
-import { Log76 } from "../logger";
-import { getProcessContext } from "../processState";
-import { ShutdownPriority } from "../shutdown";
-import DiscordMessage from "./backup/discord";
-import mysql from "./mysql";
-import sqlite from "./sqlite";
+import { Database } from "../../interfaces/database"
+import { SERVICE_KEYS, serviceRegistry } from "../../services"
+import { ConfigFile } from "../cnf/index"
+import { Log76, logger } from "../logger"
+import { getProcessContext } from "../processState"
+import { ShutdownPriority } from "../shutdown"
+import DiscordMessage from "./backup/discord"
+import mysql from "./mysql"
+import sqlite from "./sqlite"
 
 export enum DataBases {
   sqlite,
@@ -106,7 +105,11 @@ export function clearDatabaseTimeout(operationKey: string): boolean {
 /**
  * Create and return a database instance of the specified type
  */
-export function getDatabase(type: DataBases, config: ConfigFile, logger?: Log76): Database {
+export async function getDatabase(
+  type: DataBases,
+  config: ConfigFile,
+  logger?: Log76
+): Promise<Database> {
   const log = logger || globalLogger;
 
   switch (type) {
@@ -126,7 +129,7 @@ export function getDatabase(type: DataBases, config: ConfigFile, logger?: Log76)
 
       // Use the service registry to get the shutdown manager
       if (serviceRegistry.isAvailable(SERVICE_KEYS.SHUTDOWN_MANAGER)) {
-        const shutdownManager = serviceRegistry.get(SERVICE_KEYS.SHUTDOWN_MANAGER);
+        const shutdownManager = await serviceRegistry.get(SERVICE_KEYS.SHUTDOWN_MANAGER);
         shutdownManager.shutdown(1, `Invalid database type: ${DataBases[type]}`);
       } else {
         // Fallback if shutdown manager isn't available
@@ -143,17 +146,17 @@ export function getDatabase(type: DataBases, config: ConfigFile, logger?: Log76)
  * @param logger Optional logger instance
  * @returns Database instance
  */
-export function initializeDatabase(config: ConfigFile, logger: Log76): Database {
+export async function initializeDatabase(config: ConfigFile, logger: Log76): Promise<Database> {
   // Default to SQLite if not specified
   const dbType = config.database?.type ? DataBases[config.database.type] : DataBases.sqlite;
 
   // Create database instance
-  const database = getDatabase(dbType, config, logger);
+  const database = await getDatabase(dbType, config, logger);
 
   // Add the clearTimeout method to the database instance if it doesn't exist
   if (!("clearTimeout" in database)) {
     Object.defineProperty(database, "clearTimeout", {
-      value: function (key: string): boolean {
+      value(key: string): boolean {
         return clearDatabaseTimeout(key);
       },
       writable: false,
@@ -163,7 +166,7 @@ export function initializeDatabase(config: ConfigFile, logger: Log76): Database 
 
   // Make sure we register a shutdown handler to clear database timeouts
   if (serviceRegistry.isAvailable(SERVICE_KEYS.SHUTDOWN_MANAGER)) {
-    const shutdownManager = serviceRegistry.get(SERVICE_KEYS.SHUTDOWN_MANAGER);
+    const shutdownManager = await serviceRegistry.get(SERVICE_KEYS.SHUTDOWN_MANAGER);
     shutdownManager.registerCleanupTask(
       async () => {
         // Clear all database timeouts during shutdown

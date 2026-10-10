@@ -19,16 +19,15 @@ import {
   TextChannel,
   ThreadChannel,
   ThreadMember,
-} from "discord.js";
-import { logger } from "../index";
-import { ChannelData } from "../interfaces/database";
-import { ThreadBumpResult, WatchedThread } from "../interfaces/thread";
-import { SERVICE_KEYS, serviceRegistry } from "../services";
-import { EmbedBuilderFunction } from "./embedUtils";
-import { reportError } from "./errorReporter";
-import { ErrorSeverity, handleApiError } from "./errorSystem";
-import { StatusType } from "./logger";
-import { rateLimitManager } from "./rateLimitManager";
+} from "discord.js"
+import { ChannelData } from "../interfaces/database"
+import { ThreadBumpResult, WatchedThread } from "../interfaces/thread"
+import { SERVICE_KEYS, serviceRegistry } from "../services"
+import { EmbedBuilderFunction } from "./embedUtils"
+import { reportError } from "./errorReporter"
+import { ErrorSeverity, handleApiError } from "./errorSystem"
+import { logger, StatusType } from "./logger"
+import { rateLimitManager } from "./rateLimitManager"
 
 // IMPORTANT: Don't access client at module level - moved inside functions
 // Add tracking for problematic threads to avoid repeated failures
@@ -114,7 +113,7 @@ export async function handleProblemThread(thread: ThreadChannel): Promise<Thread
         message: "Client not available yet",
       };
     }
-    const client = serviceRegistry.get(SERVICE_KEYS.CLIENT);
+    const client = await serviceRegistry.get(SERVICE_KEYS.CLIENT);
 
     // Approach 1: Try sending a message even if sendable is false
     try {
@@ -328,7 +327,7 @@ export async function fetchThreadChannel(threadId: string): Promise<ThreadChanne
     return null;
   }
 
-  const client = serviceRegistry.get(SERVICE_KEYS.CLIENT);
+  const client = await serviceRegistry.get(SERVICE_KEYS.CLIENT);
 
   try {
     // First try to fetch directly
@@ -402,7 +401,7 @@ export async function fetchThreadWithMembers(threadId: string): Promise<ThreadCh
     // If we're joined according to thread.joined but there's no member entry,
     // try specifically fetching the bot's thread membership
     if (thread.joined && !thread.members.me && serviceRegistry.isAvailable(SERVICE_KEYS.CLIENT)) {
-      const client = serviceRegistry.get(SERVICE_KEYS.CLIENT);
+      const client = await serviceRegistry.get(SERVICE_KEYS.CLIENT);
       try {
         // Check that client.user is not null before accessing id property
         if (client.user) {
@@ -670,7 +669,7 @@ export async function threadShouldBeWatched(
 
       // Service registry for client access
       if (!serviceRegistry.isAvailable(SERVICE_KEYS.CLIENT)) return false;
-      const client = serviceRegistry.get(SERVICE_KEYS.CLIENT);
+      const client = await serviceRegistry.get(SERVICE_KEYS.CLIENT);
       if (!client.guilds) return false;
 
       const guild = client.guilds.cache.get(thread.guildId);
@@ -759,7 +758,7 @@ export function validateThreadCapableChannel(
 
   const channelLike = value as { id?: string; type?: number; guild?: unknown };
 
-  if (!channelLike.id || !channelLike.type) {
+  if (!channelLike.id || typeof channelLike.type !== "number") {
     if (errorHandler)
       errorHandler("INVALID_CHANNEL_DATA", { id: channelLike.id, type: channelLike.type });
     return false;
@@ -794,8 +793,8 @@ export function createThreadValidationErrorHandler(
   embedBuilder: EmbedBuilderFunction
 ) {
   return (errorCode: string, errorDetails: { id?: string; type?: number }) => {
-    let title = "Invalid Thread";
-    let description = "The provided thread is invalid.";
+    let title: string
+    let description: string;
 
     switch (errorCode) {
       case "THREAD_MISSING":
@@ -819,6 +818,13 @@ export function createThreadValidationErrorHandler(
       case "CHANNEL_MISSING":
         title = "Channel Not Found";
         description = "No channel was provided.";
+        break;
+
+      case "INVALID_CHANNEL_DATA":
+        title = "Invalid Channel Data"
+        description = errorDetails.id
+          ? `The provided channel <#${errorDetails.id}> has invalid data.`
+          : "The provided channel has invalid data."
         break;
 
       case "INVALID_CHANNEL_TYPE":
@@ -929,7 +935,7 @@ export async function repairThreadMemberConsistency(thread: ThreadChannel): Prom
 
     // 1. Force refresh thread data
     if (!serviceRegistry.isAvailable(SERVICE_KEYS.CLIENT)) return false;
-    const client = serviceRegistry.get(SERVICE_KEYS.CLIENT);
+    const client = await serviceRegistry.get(SERVICE_KEYS.CLIENT);
     let refreshedThread = (await client.channels.fetch(thread.id, {
       force: true,
     })) as ThreadChannel;

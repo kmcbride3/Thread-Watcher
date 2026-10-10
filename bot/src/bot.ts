@@ -1,13 +1,22 @@
-import { Client, Collection, Events, GatewayDispatchEvents, GatewayIntentBits } from "discord.js";
-import { logger } from "./index";
-import { Command } from "./interfaces/command";
-import { SERVICE_KEYS, serviceRegistry } from "./services";
-import { handleApiError } from "./utilities/apiErrorHandler";
-import loadCommands from "./utilities/loadCommands";
-import loadEvents from "./utilities/loadEvents";
-import { isShard } from "./utilities/processState";
-import { safeObjectAccess } from "./utilities/securityUtils";
-import { isThreadChannel } from "./utilities/threadUtils";
+import {
+  Client,
+  ClientEvents,
+  Collection,
+  Events,
+  GatewayDispatchEvents,
+  GatewayIntentBits,
+} from "discord.js"
+import { Command } from "./interfaces/command"
+import { SERVICE_KEYS, serviceRegistry } from "./services"
+import { handleApiError } from "./utilities/apiErrorHandler"
+import { EventManager } from "./utilities/eventManager"
+import loadCommands from "./utilities/loadCommands"
+import loadEvents from "./utilities/loadEvents"
+import { logger } from "./utilities/logger"
+import { isShard } from "./utilities/processState"
+import { safeObjectAccess } from "./utilities/securityUtils"
+import { ThreadManager } from "./utilities/threadManager"
+import { dueArchiveTimestamp, isThreadChannel } from "./utilities/threadUtils"
 
 // Store commands in a private collection that's accessed through a getter
 const _commands = new Collection<string, Command>();
@@ -20,23 +29,49 @@ export function getCommands(): Collection<string, Command> {
 // Track initialization state in a way that actually gets used
 let isInitialized = false;
 
+// Track registered event handlers for proper cleanup
+const clientEventHandlers = new Map<string, string>()
+
+// Track whether we've already sent a ready signal to prevent duplicates
+let hasReportedReady = false
+
+/**
+ * Clean up any event handlers registered for a client
+ * @param client The client to clean up handlers for
+ */
+function cleanupClientEventHandlers(client: Client): void {
+  if (!client) return
+
+  // Clean up each registered handler
+  for (const [handlerId, event] of clientEventHandlers) {
+    try {
+      EventManager.removeHandler(client, event, handlerId)
+      logger.trace(`Removed event handler ${handlerId}`, "BOT")
+    } catch (err) {
+      logger.debug(`Error removing handler ${handlerId}: ${err}`, "BOT")
+    }
+  }
+
+  // Clear the set once all handlers are removed
+  clientEventHandlers.clear()
+  logger.debug("Cleaned up all client event handlers", "BOT")
+}
+
 /**
  * Initialize the Discord bot
  */
 export async function initBot(discordClient: Client | null): Promise<Client> {
-  // Prevent multiple initializations
-  if (isInitialized) {
-    return serviceRegistry.get(SERVICE_KEYS.CLIENT);
+  // If already initialized, clean up before reinitializing
+  if (isInitialized && discordClient) {
+    logger.debug("Bot already initialized, cleaning up before reinitializing")
+    cleanupClientEventHandlers(discordClient);
   }
 
   // Get all required services from the registry
-  // Note: These service retrievals validate that all dependencies are available
-  // before proceeding with initialization. If any service is missing, the get()
-  // method will throw an error, preventing partial initialization.
-  const logger = serviceRegistry.get(SERVICE_KEYS.LOGGER);
-  const configData = serviceRegistry.get(SERVICE_KEYS.CONFIG);
-  const _db = serviceRegistry.get(SERVICE_KEYS.DATABASE);
-  const _shutdownManager = serviceRegistry.get(SERVICE_KEYS.SHUTDOWN_MANAGER);
+  await serviceRegistry.get(SERVICE_KEYS.LOGGER) // Validate logger is available
+  const configData = await serviceRegistry.get(SERVICE_KEYS.CONFIG)
+  await serviceRegistry.get(SERVICE_KEYS.DATABASE) // Validate database is available
+  await serviceRegistry.get(SERVICE_KEYS.SHUTDOWN_MANAGER) // Validate shutdown manager is available
 
   // Use provided client or create a new one
   const actualClient =
@@ -45,8 +80,11 @@ export async function initBot(discordClient: Client | null): Promise<Client> {
       intents: [GatewayIntentBits.Guilds],
     });
 
+  // Increase max listeners for the client to handle many events
+  actualClient.setMaxListeners(20);
+
   // Initialize user settings - required for thread monitoring
-  const _settingsInstance = serviceRegistry.get(SERVICE_KEYS.USER_SETTINGS);
+  await serviceRegistry.get(SERVICE_KEYS.USER_SETTINGS) // Validate user settings is available
 
   // Check if thread manager is available
   if (!serviceRegistry.isAvailable(SERVICE_KEYS.THREAD_MANAGER)) {
@@ -67,26 +105,40 @@ export async function initBot(discordClient: Client | null): Promise<Client> {
   // Register client in the service registry
   serviceRegistry.register(SERVICE_KEYS.CLIENT, actualClient);
 
-  // Configure client event handlers
-  actualClient.on(Events.ShardError, (error: Error) => {
+  // Register event handlers with consistent naming pattern for later cleanup
+  function registerHandler<K extends keyof ClientEvents>(
+    event: K,
+    handlerName: string,
+    handler: (...args: ClientEvents[K]) => void
+  ): void {
+    const handlerId = `client-${handlerName}`
+    // Cast to any as a temporary fix for the type issue between ClientEvents and EventHandler
+    // EventHandler expects (...args: unknown[]) => void
+    EventManager.addHandler(actualClient, event, handlerId, (...args: unknown[]) =>
+      handler(...(args as ClientEvents[K]))
+    )
+    clientEventHandlers.set(handlerId, event)
+  }
+
+  // Configure client event handlers using EventManager and track them for cleanup
+  registerHandler(Events.ShardError, "shard-error", (error: Error) => {
     logger.error(`Shard Error: ${error.message}`, `SHARD ${actualClient.shard?.ids[0]}`);
     if (error.stack) logger.error(error.stack);
   });
 
-  actualClient.on(Events.Error, (error: Error) => {
+  registerHandler(Events.Error, "error", (error: Error) => {
     logger.error(`Client Error: ${error.message}`, `SHARD ${actualClient.shard?.ids[0]}`);
     if (error.stack) logger.error(error.stack);
   });
 
-  actualClient.on(Events.Debug, (info: string) => {
+  registerHandler(Events.Debug, "debug", (info: string) => {
     if (Number(configData.logLevel) >= 4) {
       logger.trace(`Discord Debug: ${info}`, `SHARD ${actualClient.shard?.ids[0]}`);
     }
   });
 
   // Handle ready event
-  actualClient.on(Events.ClientReady, async () => {
-    // Use the actual client reference
+  registerHandler(Events.ClientReady, "ready", async () => {
     const shardId = actualClient.shard?.ids[0] ?? 0;
     if (!actualClient.user) {
       logger.error("Client ready but no user available", `SHARD ${shardId}`);
@@ -96,24 +148,24 @@ export async function initBot(discordClient: Client | null): Promise<Client> {
     logger.done(`Logged in as ${actualClient.user.tag}!`, `SHARD ${shardId}`);
 
     try {
-      // Initialize thread monitoring if thread manager is available
       if (serviceRegistry.isAvailable(SERVICE_KEYS.THREAD_MANAGER)) {
-        const threadManager = serviceRegistry.get(SERVICE_KEYS.THREAD_MANAGER);
+        const threadManager = await serviceRegistry.get(SERVICE_KEYS.THREAD_MANAGER);
 
-        // Set the REST client for the thread manager
         threadManager.setRestClient(actualClient.rest);
 
-        // Now that client is ready, we can synchronize thread data with database
-        logger.info(`Loading thread data from database...`, `SHARD ${shardId}`);
+        logger.info("Loading thread data from database...", `SHARD ${shardId}`);
         await threadManager.loadThreadsFromDatabase();
-        logger.done(`Thread data loaded successfully`, `SHARD ${shardId}`);
+        logger.done("Thread data loaded successfully", `SHARD ${shardId}`);
 
-        // Start thread monitoring
-        logger.info(`Starting thread monitoring for shard ${shardId}`, `SHARD ${shardId}`);
-        threadManager.startThreadMonitoring(shardId);
+        logger.info(`Initializing servers with watched content...`, `SHARD ${shardId}`)
+        await initializeWatchedServers(threadManager, actualClient, shardId)
+        logger.debug(`Server initialization complete`, `SHARD ${shardId}`)
+
+        logger.info(`Starting thread monitoring for Shard ${shardId}`, `SHARD ${shardId}`)
+        await threadManager.startThreadMonitoring(shardId);
       } else {
         logger.error(
-          `Thread manager service not available, monitoring not started`,
+          "Thread manager service not available, monitoring not started",
           `SHARD ${shardId}`
         );
       }
@@ -121,7 +173,6 @@ export async function initBot(discordClient: Client | null): Promise<Client> {
       logger.error(`Failed to initialize thread monitoring: ${err}`, `SHARD ${shardId}`);
     }
 
-    // Initialize commands
     try {
       logger.trace("Loading commands...", `SHARD ${shardId}`);
       await loadCommands();
@@ -130,104 +181,114 @@ export async function initBot(discordClient: Client | null): Promise<Client> {
       logger.error(`Error loading commands: ${loadCommandsErr}`, `SHARD ${shardId}`);
     }
 
-    // Load event handlers
-    try {
-      logger.trace("Loading event handlers...", `SHARD ${shardId}`);
-      await loadEvents(actualClient, logger);
-      logger.debug("Event handlers loaded", `SHARD ${shardId}`);
-    } catch (loadEventsErr) {
-      logger.error(`Error loading event handlers: ${loadEventsErr}`, `SHARD ${shardId}`);
-    }
-
-    // Mark as initialized
     isInitialized = true;
   });
 
   // Handle shard disconnect
-  actualClient.on(Events.ShardDisconnect, (_closeEvent, shardId) => {
-    logger.warn(`Disconnected from Discord`, `SHARD ${shardId}`);
+  registerHandler(Events.ShardDisconnect, "disconnect", async (_closeEvent, shardId) => {
+    logger.warn("Disconnected from Discord", `SHARD ${shardId}`);
 
-    // Pause thread monitoring when disconnected
     if (serviceRegistry.isAvailable(SERVICE_KEYS.THREAD_MANAGER)) {
-      const threadManager = serviceRegistry.get(SERVICE_KEYS.THREAD_MANAGER);
+      const threadManager = await serviceRegistry.get(SERVICE_KEYS.THREAD_MANAGER);
       threadManager.pauseThreadMonitoring(shardId);
     }
   });
 
   // Handle reconnect
-  actualClient.on(Events.ShardReconnecting, (shardId) => {
-    logger.info(`Reconnecting to Discord...`, `SHARD ${shardId}`);
+  registerHandler(Events.ShardReconnecting, "reconnecting", (shardId) => {
+    logger.info("Reconnecting to Discord...", `SHARD ${shardId}`);
   });
 
   // Handle resume
-  actualClient.on(Events.ShardResume, (shardId) => {
-    logger.done(`Connection resumed`, `SHARD ${shardId}`);
+  registerHandler(Events.ShardResume, "resume", async (shardId) => {
+    logger.done("Connection resumed", `SHARD ${shardId}`);
 
-    // Resume thread monitoring when connection is restored
     if (serviceRegistry.isAvailable(SERVICE_KEYS.THREAD_MANAGER)) {
-      const threadManager = serviceRegistry.get(SERVICE_KEYS.THREAD_MANAGER);
-      threadManager.startThreadMonitoring(shardId);
+      const threadManager = await serviceRegistry.get(SERVICE_KEYS.THREAD_MANAGER)
+      await threadManager.startThreadMonitoring(shardId).catch((err: unknown) => {
+        logger.error(`Failed to restart thread monitoring: ${String(err)}`, `SHARD ${shardId}`)
+      });
     }
   });
 
   // Handle raw gateway events for direct control
-  actualClient.on(Events.Raw, async (packet) => {
+  const rawHandlerId = "client-raw-gateway"
+  EventManager.addHandler(actualClient, "raw", rawHandlerId, async (...args: unknown[]) => {
+    const packet = args[0] as { t?: GatewayDispatchEvents; d?: unknown } | undefined;
     try {
       if (!packet) return;
 
-      // Handle thread creation events
       if (packet.t === GatewayDispatchEvents.ThreadCreate) {
-        await handleThreadCreate(packet.d).catch((err) =>
+        await handleThreadCreate(packet.d as RawThreadCreateData).catch((err) =>
           logger.warn(
             `Error in thread creation handler: ${err}`,
-            `THREAD ${safeObjectAccess(packet.d, "id", ["id"]) || "unknown"}`
+            `THREAD ${safeObjectAccess(packet.d as object, "id", ["id"]) || "unknown"}`
           )
         );
       }
 
-      // Handle thread update events
       if (packet.t === GatewayDispatchEvents.ThreadUpdate) {
-        await handleThreadUpdate(packet.d).catch((err) =>
+        await handleThreadUpdate(packet.d as RawThreadUpdateData).catch((err) =>
           logger.warn(
             `Error in thread update handler: ${err}`,
-            `THREAD ${safeObjectAccess(packet.d, "id", ["id"]) || "unknown"}`
+            `THREAD ${safeObjectAccess(packet.d as object, "id", ["id"]) || "unknown"}`
           )
         );
       }
 
-      // Handle thread deletion events
       if (packet.t === GatewayDispatchEvents.ThreadDelete) {
-        await handleThreadDelete(packet.d).catch((err) =>
+        await handleThreadDelete(packet.d as RawThreadDeleteData).catch((err) =>
           logger.warn(
             `Error in thread deletion handler: ${err}`,
-            `THREAD ${safeObjectAccess(packet.d, "id", ["id"]) || "unknown"}`
+            `THREAD ${safeObjectAccess(packet.d as object, "id", ["id"]) || "unknown"}`
           )
         );
       }
     } catch (err) {
-      const threadId = safeObjectAccess(packet, "d.id", ["d", "id"]) || "unknown";
+      const threadId = safeObjectAccess(packet as object, "d.id", ["d", "id"]) || "unknown";
       logger.error(`Error handling raw gateway event: ${err}`, `THREAD ${threadId}`);
     }
   });
+  clientEventHandlers.set(rawHandlerId, "raw");
 
   // Standard Discord.js event handler - no need to send custom message
-  actualClient.once(Events.ShardReady, (shardId, unavailableGuilds) => {
+  registerHandler(Events.ShardReady, "shard-ready", (shardId, unavailableGuilds) => {
     logger.trace(
       `Ready with ${unavailableGuilds?.size || 0} unavailable guilds`,
       `SHARD ${shardId}`
     );
 
-    // Send ready signal to main process if we're a shard
-    if (isShard() && process.send) {
-      logger.debug(`Sent ready signal to main process`, `SHARD ${shardId}`);
+    // Only send ready signal once per shard process
+    if (isShard() && process.send && !hasReportedReady) {
+      hasReportedReady = true // Set flag to prevent duplicate signals
+      logger.debug("Sent ready signal to main process", `SHARD ${shardId}`);
       process.send({ type: "SHARD_READY", id: shardId });
     }
   });
 
-  // Connect to Discord if not already connected
+  // Register cleanup function with shutdown manager
+  try {
+    const shutdownManager = await serviceRegistry.get(SERVICE_KEYS.SHUTDOWN_MANAGER)
+    shutdownManager.registerCleanupTask(
+      async () => {
+        cleanupClientEventHandlers(actualClient)
+        logger.debug("Client event handlers cleaned up during shutdown")
+      },
+      {
+        name: "Client_Event_Handlers_Cleanup",
+        priority: 2, // Higher priority to ensure it runs early
+        timeout: 2000,
+      }
+    )
+  } catch (err) {
+    logger.warn(`Failed to register event handler cleanup task: ${err}`)
+  }
+
   if (!actualClient.isReady()) {
     await actualClient.login(configData.tokens.discord);
   }
+
+  await loadEvents(actualClient, logger);
 
   return actualClient;
 }
@@ -273,41 +334,31 @@ async function handleThreadCreate(data: RawThreadCreateData): Promise<void> {
   }
 
   try {
-    // Use the service registry to get the client
-    const actualClient = serviceRegistry.get(SERVICE_KEYS.CLIENT);
+    const actualClient = await serviceRegistry.get(SERVICE_KEYS.CLIENT);
     const channel = await actualClient.channels.fetch(threadId);
     if (!channel || !isThreadChannel(channel)) return;
 
-    // Check if the thread's parent channel is being watched
-    // This would indicate we should auto-watch this thread
     const parentId = channel.parentId;
     if (!parentId) return;
 
-    // Get database and settings instances from the registry
-    const db = serviceRegistry.get(SERVICE_KEYS.DATABASE);
-    const settingsInstance = serviceRegistry.get(SERVICE_KEYS.USER_SETTINGS);
+    const db = await serviceRegistry.get(SERVICE_KEYS.DATABASE)
+    const settingsInstance = await serviceRegistry.get(SERVICE_KEYS.USER_SETTINGS);
 
-    // Check if the thread's parent channel is being watched directly using the database
     const isParentWatched = await settingsInstance.isChannelWatched(parentId, guildId);
 
     if (isParentWatched) {
-      // Auto-watch this thread since its parent is watched
       logger.info(
         `Auto-watching new thread ${channel.name} (${threadId}) in watched channel`,
         `THREAD ${threadId}`
       );
-      const threadManager = serviceRegistry.get(SERVICE_KEYS.THREAD_MANAGER);
+      const threadManager = await serviceRegistry.get(SERVICE_KEYS.THREAD_MANAGER);
 
-      // Calculate the due archive time
-      const dueArchive = Date.now() + (channel.autoArchiveDuration || 1440) * 60 * 1000;
+      const dueArchive = dueArchiveTimestamp(channel.autoArchiveDuration || 1440);
 
-      // Add to database directly using the db service
       await db.insertThread(threadId, dueArchive, guildId);
 
-      // Watch thread in memory
       threadManager.watchThread(channel, guildId);
 
-      // Ensure we join the thread
       if (!channel.joined && channel.joinable) {
         await channel
           .join()
@@ -323,8 +374,8 @@ async function handleThreadCreate(data: RawThreadCreateData): Promise<void> {
       () => {
         throw err;
       },
-      2, // retries
-      1000 // delay
+      2,
+      1000
     );
   }
 }
@@ -340,26 +391,23 @@ async function handleThreadUpdate(data: RawThreadUpdateData): Promise<void> {
     return;
   }
 
-  // Check if this thread is being watched using database directly
-  const db = serviceRegistry.get(SERVICE_KEYS.DATABASE);
+  const db = await serviceRegistry.get(SERVICE_KEYS.DATABASE);
   const threads = await db.getThreads(safeObjectAccess(data, "guild_id", ["guild_id"]) || "");
   const isWatched = threads.some((thread) => thread.id === threadId && thread.watching);
 
-  if (!isWatched) return; // Not our concern
+  if (!isWatched) return;
 
-  // Access thread metadata using safeObjectAccess
   const archived =
     safeObjectAccess(data, "thread_metadata.archived", ["thread_metadata", "archived"]) || false;
 
   if (archived) {
     try {
-      const actualClient = serviceRegistry.get(SERVICE_KEYS.CLIENT);
+      const actualClient = await serviceRegistry.get(SERVICE_KEYS.CLIENT);
       const channel = await actualClient.channels.fetch(threadId).catch(() => null);
 
       if (channel && isThreadChannel(channel)) {
         logger.info(`Unarchiving watched thread ${threadId}`, `THREAD ${threadId}`);
 
-        // First ensure we're in the thread
         if (!channel.joined && channel.joinable) {
           await channel
             .join()
@@ -371,14 +419,12 @@ async function handleThreadUpdate(data: RawThreadUpdateData): Promise<void> {
             );
         }
 
-        // Attempt to unarchive it
         await channel.setArchived(false).catch((err) => {
           logger.warn(`Failed to unarchive thread ${threadId}: ${err}`, `THREAD ${threadId}`);
         });
 
-        // Update any due archive time directly in the database
         if (channel.autoArchiveDuration) {
-          const dueArchive = Date.now() + channel.autoArchiveDuration * 60 * 1000;
+          const dueArchive = dueArchiveTimestamp(channel.autoArchiveDuration);
           await db.updateDueArchive(threadId, dueArchive);
           logger.debug(`Updated thread ${threadId} due archive timestamp`, `THREAD ${threadId}`);
         }
@@ -390,8 +436,8 @@ async function handleThreadUpdate(data: RawThreadUpdateData): Promise<void> {
         () => {
           throw err;
         },
-        2, // retries
-        1000 // delay
+        2,
+        1000
       );
     }
   }
@@ -409,14 +455,12 @@ async function handleThreadDelete(data: RawThreadDeleteData): Promise<void> {
   }
 
   try {
-    // Use database directly to check if thread was being watched
-    const db = serviceRegistry.get(SERVICE_KEYS.DATABASE);
+    const db = await serviceRegistry.get(SERVICE_KEYS.DATABASE);
     const threads = await db.getAllWatchedThreads();
     const watchedThread = threads.find((thread) => thread.id === threadId);
 
-    if (!watchedThread || !watchedThread.watching) return; // Not our concern
+    if (!watchedThread || !watchedThread.watching) return;
 
-    // Thread was deleted, remove it from database
     logger.info(
       `Watched thread ${threadId} was deleted, removing from database`,
       `THREAD ${threadId}`
@@ -430,7 +474,7 @@ async function handleThreadDelete(data: RawThreadDeleteData): Promise<void> {
     });
 
     // Also update the thread manager
-    const threadManager = serviceRegistry.get(SERVICE_KEYS.THREAD_MANAGER);
+    const threadManager = await serviceRegistry.get(SERVICE_KEYS.THREAD_MANAGER);
     threadManager.unwatchThread(threadId);
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
@@ -439,13 +483,111 @@ async function handleThreadDelete(data: RawThreadDeleteData): Promise<void> {
       () => {
         throw err;
       },
-      2, // retries
-      1000 // delay
+      2,
+      1000
     );
   }
 }
 
-// Store commands in the local collection
+/**
+ * Store a command in the commands collection
+ */
 export function setCommand(name: string, command: Command): void {
   _commands.set(name, command);
+}
+
+/**
+ * Initialize all servers with watched content
+ */
+async function initializeWatchedServers(
+  threadManager: ThreadManager,
+  client: Client,
+  shardId: number
+): Promise<void> {
+  try {
+    // First check if database service is available
+    if (!serviceRegistry.isAvailable(SERVICE_KEYS.DATABASE)) {
+      logger.warn("Database not available for initializing watched servers", `SHARD ${shardId}`)
+      return
+    }
+
+    const db = await serviceRegistry.get(SERVICE_KEYS.DATABASE)
+
+    // Get all servers with watched threads first
+    logger.debug(`Fetching watched content information from database`, `SHARD ${shardId}`)
+
+    // Start by getting all watched threads
+    const watchedThreads = await db.getAllWatchedThreads()
+
+    // Extract unique server IDs from watched threads
+    const serverIds = new Set<string>()
+
+    watchedThreads.forEach((thread) => {
+      if (thread.server) serverIds.add(thread.server)
+    })
+
+    // For each server, check if it has watched channels
+    // This replaces the non-existent getAllWatchedChannels() method
+    const watchedChannelsPromises = Array.from(serverIds).map(async (serverId) => {
+      try {
+        const channels = await db.getChannels(serverId)
+        return channels.map((channel) => ({ ...channel, server: serverId }))
+      } catch (err) {
+        logger.warn(`Error fetching channels for Server ${serverId}: ${err}`, `SHARD ${shardId}`)
+        return []
+      }
+    })
+
+    // Wait for all channel queries to complete
+    const watchedChannelsArrays = await Promise.all(watchedChannelsPromises)
+
+    // Flatten the arrays into a single array of watched channels
+    const watchedChannels = watchedChannelsArrays.flat()
+
+    // Add any servers that have watched channels to our serverIds set
+    watchedChannels.forEach((channel) => {
+      if (channel.server) serverIds.add(channel.server)
+    })
+
+    if (serverIds.size === 0) {
+      logger.debug(`No servers with watched content found`, `SHARD ${shardId}`)
+      return
+    }
+
+    logger.info(
+      `Found ${serverIds.size} servers with watched content to initialize`,
+      `SHARD ${shardId}`
+    )
+
+    // Only initialize servers available to this shard; avoid REST fetches for guild membership
+    let processedCount = 0
+    for (const serverId of serverIds) {
+      try {
+        const guild = client.guilds.cache.get(serverId)
+        if (guild) {
+          processedCount++
+          logger.debug(
+            `Initializing watched content for Server ${guild.name} (${serverId})`,
+            `SHARD ${shardId}`
+          )
+          await threadManager.checkThreadsForServer(serverId)
+        } else {
+          logger.debug(
+            `Server ${serverId} not available to this shard, skipping initialization`,
+            `SHARD ${shardId}`
+          )
+        }
+      } catch (serverError) {
+        logger.warn(`Error initializing Server ${serverId}: ${serverError}`, `SHARD ${shardId}`)
+      }
+    }
+
+    if (processedCount > 0) {
+      logger.info(`Initialized ${processedCount} servers with watched content`, `SHARD ${shardId}`)
+    } else {
+      logger.debug(`No servers required initialization on this shard`, `SHARD ${shardId}`)
+    }
+  } catch (error) {
+    logger.error(`Failed to initialize watched servers: ${error}`, `SHARD ${shardId}`)
+  }
 }

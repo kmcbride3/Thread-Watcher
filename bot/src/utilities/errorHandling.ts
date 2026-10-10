@@ -1,7 +1,6 @@
-import { CommandInteraction, MessageFlagsBitField } from "discord.js";
-import { logger } from "../index";
-import { EmbedBuilderFunction } from "./embedUtils";
-import { StatusType } from "./logger";
+import { CommandInteraction, MessageFlagsBitField } from "discord.js"
+import { EmbedBuilderFunction } from "./embedUtils"
+import { logger, StatusType } from "./logger"
 
 /**
  * Safely respond to an interaction with an error message

@@ -1,14 +1,14 @@
-import { createHash } from "crypto";
-import { Collection, REST, Routes } from "discord.js";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import path from "path";
-import { logger } from "../index";
-import { Command } from "../interfaces/command";
-import { ConfigFile } from "./cnf/index";
-import { validateCommandOptions } from "./commandValidator";
-import { ErrorSeverity, handleApiError } from "./errorSystem";
-import loadCommands from "./loadCommands";
-import { rateLimitManager } from "./rateLimitManager";
+import { createHash } from "crypto"
+import { Collection, REST, Routes } from "discord.js"
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs"
+import path from "path"
+import { Command } from "../interfaces/command"
+import { ConfigFile } from "./cnf/index"
+import { validateCommandOptions } from "./commandValidator"
+import { ErrorSeverity, handleApiError } from "./errorSystem"
+import loadCommands from "./loadCommands"
+import { logger } from "./logger"
+import { rateLimitManager } from "./rateLimitManager"
 
 export async function registerCommands(global: boolean, config: ConfigFile): Promise<void> {
   logger.debug(`Loading commands for registration (${global ? "global" : "local"})`);
@@ -67,7 +67,7 @@ export async function registerCommands(global: boolean, config: ConfigFile): Pro
     const registerPromises = [];
 
     if (global && publicCommands.size > 0) {
-      logger.info(`Registering ${publicCommands.size} commands globally`);
+      logger.trace(`Registering ${publicCommands.size} commands globally`);
 
       const registerGlobalCommands = async () => {
         // Wait for rate limit before proceeding with global command registration
@@ -93,7 +93,7 @@ export async function registerCommands(global: boolean, config: ConfigFile): Pro
         : new Collection([...publicCommands.entries(), ...privateCommands.entries()]);
 
       if (devCommands.size > 0) {
-        logger.info(`Registering ${devCommands.size} commands to development server`);
+        logger.trace(`Registering ${devCommands.size} commands to development server`);
 
         const registerDevCommands = async () => {
           // Wait for rate limit before proceeding with dev server command registration
@@ -183,16 +183,11 @@ export async function genCommandHash(writeToFile = true): Promise<string> {
 
       if (!existsSync(hashDir)) {
         mkdirSync(hashDir, { recursive: true });
-        try {
-          chmodSync(hashDir, 0o775);
-        } catch (err) {
-          logger.warn(`Failed to set directory permissions: ${err}`);
-        }
       }
 
       writeFileSync(hashFilePath, digest);
       try {
-        chmodSync(hashFilePath, 0o664);
+        chmodSync(hashFilePath, 0o640);
       } catch (err) {
         logger.warn(`Failed to set hash file permissions: ${err}`);
       }

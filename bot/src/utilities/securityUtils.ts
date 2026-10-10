@@ -1,8 +1,8 @@
-import { Collection } from "discord.js";
-import { existsSync, mkdirSync } from "fs";
-import path from "path";
-import { logger } from "../index";
-import { ErrorSeverity, handleApiError } from "./errorSystem";
+import { Collection } from "discord.js"
+import { existsSync, mkdirSync } from "fs"
+import path from "path"
+import { ErrorSeverity, handleApiError } from "./errorSystem"
+import { logger } from "./logger"
 
 /**
  * This utility contains security-related validation functions that can be used
@@ -438,7 +438,9 @@ export function safeRegExp(pattern: string, flags?: string): RegExp {
     return new RegExp(pattern, flags);
   } catch (err) {
     logger.debug(`Invalid RegExp pattern rejected: ${pattern}`);
-    throw new Error(`Invalid RegExp pattern: ${err instanceof Error ? err.message : String(err)}`);
+    throw new Error(`Invalid RegExp pattern: ${err instanceof Error ? err.message : String(err)}`, {
+      cause: err,
+    });
   }
 }
 

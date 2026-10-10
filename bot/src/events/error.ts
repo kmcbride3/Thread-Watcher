@@ -1,5 +1,5 @@
-import { Events } from "discord.js";
-import { logger } from "../index";
+import { Events } from "discord.js"
+import { logger } from "../utilities/logger"
 
 export default {
   name: Events.Error,

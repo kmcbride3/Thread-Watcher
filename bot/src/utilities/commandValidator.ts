@@ -4,9 +4,9 @@ import {
   SlashCommandBuilder,
   SlashCommandOptionsOnlyBuilder,
   SlashCommandSubcommandsOnlyBuilder,
-} from "discord.js";
-import { logger } from "../index";
-import { Command } from "../interfaces/command";
+} from "discord.js"
+import { Command } from "../interfaces/command"
+import { logger } from "./logger"
 
 interface ValidationError {
   commandName: string;
@@ -99,7 +99,7 @@ function validateCommandBuilderOptions(
     if (!("name" in option)) {
       errors.push({
         commandName,
-        message: `Option missing name property`,
+        message: "Option missing name property",
       });
       return;
     }

@@ -1,12 +1,12 @@
-import { Events, Message } from "discord.js";
-import { logger } from "../index";
-import { SERVICE_KEYS, serviceRegistry } from "../services";
-import { bumpAutoTime } from "../utilities/threadActions";
+import { Events, Message } from "discord.js"
+import { SERVICE_KEYS, serviceRegistry } from "../services"
+import { logger } from "../utilities/logger"
+import { bumpAutoTime } from "../utilities/threadActions"
 
 export default {
   name: Events.MessageCreate,
   once: false,
-  execute(message: Message) {
+  async execute(message: Message) {
     if (message.author.bot) return null;
     if (!message.channel || !message.channel.isThread()) return null;
 
@@ -14,7 +14,7 @@ export default {
       return null;
     }
 
-    const threadManager = serviceRegistry.get(SERVICE_KEYS.THREAD_MANAGER);
+    const threadManager = await serviceRegistry.get(SERVICE_KEYS.THREAD_MANAGER);
     const threads = threadManager.getWatchedThreads();
 
     if (!threads.has(message.channelId)) return null;

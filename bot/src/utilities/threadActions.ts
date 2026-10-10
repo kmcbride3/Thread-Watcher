@@ -1,9 +1,14 @@
-import { ThreadAutoArchiveDuration, ThreadChannel } from "discord.js";
-import { logger } from "../index";
-import { ThreadBumpResult } from "../interfaces/thread";
-import { SERVICE_KEYS, serviceRegistry } from "../services";
-import { handleApiError } from "./apiErrorHandler";
-import { dueArchiveTimestamp } from "./threadUtils";
+import { ThreadAutoArchiveDuration, ThreadChannel } from "discord.js"
+import { ThreadBumpResult } from "../interfaces/thread"
+import { SERVICE_KEYS, serviceRegistry } from "../services"
+import { handleApiError } from "./apiErrorHandler"
+import {
+  formatArchiveDuration,
+  formatDiscordTimestamp,
+  formatRelativeTimestamp,
+} from "./formatUtils"
+import { logger } from "./logger"
+import { dueArchiveTimestamp, isThreadChannel, validateThread } from "./threadUtils"
 
 // IMPORTANT: Don't access any services at the module level!
 // Import services only inside functions
@@ -12,6 +17,7 @@ import { dueArchiveTimestamp } from "./threadUtils";
 export const threadActions = {
   /**
    * Add a thread to the database for watching
+   * Enhanced version of the original addThread with better error handling
    */
   async addThread(id: string, dueArchive: number, server: string): Promise<boolean> {
     try {
@@ -23,9 +29,17 @@ export const threadActions = {
         logger.debug("Database not available when adding thread");
         return false;
       }
-      const db = serviceRegistry.get(SERVICE_KEYS.DATABASE);
 
+      const { rateLimitManager } = await import("./rateLimitManager")
+      // Wait for rate limit to avoid database throttling
+      await rateLimitManager.waitForRateLimit(`db/threads/${id}`)
+
+      const db = await serviceRegistry.get(SERVICE_KEYS.DATABASE);
       await db.insertThread(id, dueArchive, server);
+
+      logger.info(
+        `Thread ${id} added to watch list with archive time ${formatRelativeTimestamp(dueArchive * 1000)}`
+      );
       return true;
     } catch (err) {
       logger.error(`Failed to add thread ${id}: ${String(err)}`);
@@ -35,10 +49,14 @@ export const threadActions = {
 
   /**
    * Bump a thread's auto-archive time to maximum
+   * Enhanced version of the original bumpAutoTime with better error handling
    */
   async bumpAutoTime(thread: ThreadChannel): Promise<boolean> {
     try {
+      // Dynamic import used to avoid circular dependencies
       const { rateLimitManager } = await import("./rateLimitManager");
+
+      // Wait for rate limit to avoid Discord API throttling
       await rateLimitManager.waitForRateLimit(`thread/${thread.id}/bump`);
 
       if (!thread.manageable) {
@@ -46,8 +64,32 @@ export const threadActions = {
         return false;
       }
 
+      // Handle validation
+      if (!isThreadChannel(thread)) {
+        logger.error(
+          `Invalid thread object provided to bumpAutoTime: ${(thread as ThreadChannel)?.id || "unknown"}`
+        )
+        return false
+      }
+
       // Use the longest auto-archive duration available
       await thread.setAutoArchiveDuration(ThreadAutoArchiveDuration.OneWeek);
+
+      // Get the database instance
+      if (serviceRegistry.isAvailable(SERVICE_KEYS.DATABASE)) {
+        const db = await serviceRegistry.get(SERVICE_KEYS.DATABASE)
+
+        // Update the due archive time in the database
+        const newDueArchive = dueArchiveTimestamp(
+          thread.autoArchiveDuration || ThreadAutoArchiveDuration.OneWeek
+        )
+        await db.updateDueArchive(thread.id, newDueArchive)
+
+        logger.debug(
+          `Updated due archive time for thread ${thread.id} to ${formatDiscordTimestamp(newDueArchive * 1000)}`
+        )
+      }
+
       logger.debug(`Bumped thread ${thread.id} auto-archive duration to maximum`);
       return true;
     } catch (err) {
@@ -66,7 +108,7 @@ export const threadActions = {
         return false;
       }
 
-      const db = serviceRegistry.get(SERVICE_KEYS.DATABASE);
+      const db = await serviceRegistry.get(SERVICE_KEYS.DATABASE);
       await db.deleteThread(threadID);
       return true;
     } catch (err) {
@@ -120,7 +162,7 @@ export const threadActions = {
         return;
       }
 
-      const db = serviceRegistry.get(SERVICE_KEYS.DATABASE);
+      const db = await serviceRegistry.get(SERVICE_KEYS.DATABASE);
       const newDueArchive = dueArchiveTimestamp(
         thread.autoArchiveDuration || ThreadAutoArchiveDuration.OneDay
       );
@@ -133,6 +175,7 @@ export const threadActions = {
 
   /**
    * Set the archive duration of a thread
+   * Enhanced version of the original setArchive with improved error handling
    */
   async setArchive(
     thread: ThreadChannel,
@@ -142,11 +185,29 @@ export const threadActions = {
       return await handleApiError(
         `Failed to set archive duration for thread ${thread.id}`,
         async () => {
+          // Handle validation through error system instead of throwing
+          if (!validateThread(thread)) {
+            logger.error(
+              `Invalid thread object provided to setArchive: ${(thread as ThreadChannel)?.id || "unknown"}`
+            )
+            return false
+          }
+
+          // Unarchive the thread if it's archived
+          if (thread.archived) {
+            await thread.setArchived(false)
+            logger.debug(`Unarchived thread ${thread.id}`)
+          }
+
+          // Set the auto-archive duration
           await thread.setAutoArchiveDuration(duration);
+          logger.debug(
+            `Updated auto-archive duration for thread ${thread.id} to ${formatArchiveDuration(duration)}`
+          );
           return true;
         },
         2, // retries
-        1000 // retry delay
+        1000 // retryDelay
       );
     } catch (err) {
       logger.error(`Failed to set thread archive duration: ${String(err)}`);
@@ -163,7 +224,7 @@ export const threadActions = {
         return false;
       }
 
-      const client = serviceRegistry.get(SERVICE_KEYS.CLIENT);
+      const client = await serviceRegistry.get(SERVICE_KEYS.CLIENT);
       const channel = await client.channels.fetch(threadID).catch(() => null);
       return channel !== null;
     } catch {
@@ -236,7 +297,7 @@ export const threadActions = {
           return false;
         }
 
-        const client = serviceRegistry.get(SERVICE_KEYS.CLIENT);
+        const client = await serviceRegistry.get(SERVICE_KEYS.CLIENT);
         await client.rest.put(`/channels/${thread.id}/thread-members/@me`);
         logger.debug(`Joined thread ${thread.id} using direct API call`);
       } else {
@@ -283,7 +344,7 @@ export const threadActions = {
         return false;
       }
 
-      const client = serviceRegistry.get(SERVICE_KEYS.CLIENT);
+      const client = await serviceRegistry.get(SERVICE_KEYS.CLIENT);
       logger.debug(`Cycling membership for thread ${thread.id}`);
 
       // Try to leave thread using direct API call
@@ -429,7 +490,7 @@ export const threadActions = {
 
       if (serviceRegistry.isAvailable(SERVICE_KEYS.USER_SETTINGS) && thread.guildId) {
         try {
-          const userSettings = serviceRegistry.get(SERVICE_KEYS.USER_SETTINGS);
+          const userSettings = await serviceRegistry.get(SERVICE_KEYS.USER_SETTINGS);
           const customMessage = await userSettings.getSetting(thread.guildId, "bumpMessage");
           if (customMessage && typeof customMessage === "string" && customMessage.trim() !== "") {
             message = customMessage.trim();
@@ -595,7 +656,7 @@ export const threadActions = {
       // Update thread in database with newest auto-archive duration
       if (serviceRegistry.isAvailable(SERVICE_KEYS.DATABASE) && thread.autoArchiveDuration) {
         try {
-          const db = serviceRegistry.get(SERVICE_KEYS.DATABASE);
+          const db = await serviceRegistry.get(SERVICE_KEYS.DATABASE);
           const dueArchive = Math.floor(Date.now() / 1000) + thread.autoArchiveDuration * 60;
           await db.updateDueArchive(threadId, dueArchive);
           logger.debug(`Updated thread ${threadId} due archive timestamp to ${dueArchive}`);
@@ -633,18 +694,38 @@ export const updateThreadStatus = threadActions.updateThreadStatus;
 export const refreshThreadData = threadActions.refreshThreadData;
 
 // Add the rest of your functions here following the same pattern
+/**
+ * For unknown threads, set a far-future timestamp
+ * Maintains the original implementation for backward compatibility
+ */
 export async function bumpUnknown(id: string): Promise<void> {
   try {
     const { fetchThreadChannel } = await import("./threadUtils");
     const thread = await fetchThreadChannel(id);
+
     if (thread) {
+      // Use the enhanced version if thread is found
       await threadActions.bumpAutoTime(thread);
+    } else {
+      // For truly unknown threads, just set a far-future timestamp
+      if (serviceRegistry.isAvailable(SERVICE_KEYS.DATABASE)) {
+        const db = await serviceRegistry.get(SERVICE_KEYS.DATABASE)
+        const timestamp = dueArchiveTimestamp(10_080) // One week in minutes
+        await db.updateDueArchive(id, timestamp)
+        logger.debug(
+          `Bumped unknown thread ${id} to future timestamp ${formatDiscordTimestamp(timestamp * 1000)}`
+        )
+      }
     }
   } catch (err) {
     logger.error(`Failed to bump unknown thread ${id}: ${String(err)}`);
   }
 }
 
+/**
+ * Clear all threads for a guild from memory and database
+ * Preserves the original implementation's comprehensive cleaning
+ */
 export async function clearGuild(server: string): Promise<void> {
   try {
     if (!serviceRegistry.isAvailable(SERVICE_KEYS.DATABASE)) {
@@ -652,8 +733,25 @@ export async function clearGuild(server: string): Promise<void> {
       return;
     }
 
-    const db = serviceRegistry.get(SERVICE_KEYS.DATABASE);
+    // Get thread manager and database from registry
+    const db = await serviceRegistry.get(SERVICE_KEYS.DATABASE)
+    const threadManager = await serviceRegistry.get(SERVICE_KEYS.THREAD_MANAGER)
+
+    // Get threads for this server
+    const watchedThreads = threadManager.getWatchedThreads()
+    const guildThreads = watchedThreads.filter((thread) => thread.server === server)
+
+    const threadCount = guildThreads.size
+    logger.info(`Clearing ${threadCount} threads from guild ${server}`)
+
+    // Clear the local cache; deleteGuild removes the database rows in one operation.
+    for (const [threadId] of guildThreads) {
+      threadManager.unwatchThread(threadId)
+    }
+
+    // Delete the guild entirely from the database
     await db.deleteGuild(server);
+    logger.done(`Successfully cleared all ${threadCount} threads for guild ${server}`);
   } catch (err) {
     logger.error(`Failed to clear guild ${server}: ${String(err)}`);
   }

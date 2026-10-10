@@ -1,8 +1,8 @@
-import { Collection } from "discord.js";
-import { logger } from "../index";
-import { Database } from "../interfaces/database";
-import { ErrorSeverity, handleApiError } from "./errorSystem";
-import { rateLimitManager } from "./rateLimitManager";
+import { Collection } from "discord.js"
+import { Database } from "../interfaces/database"
+import { ErrorSeverity, handleApiError } from "./errorSystem"
+import { logger } from "./logger"
+import { rateLimitManager } from "./rateLimitManager"
 
 export default class UserSettings {
   db: Database;

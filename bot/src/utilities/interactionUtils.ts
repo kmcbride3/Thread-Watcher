@@ -8,20 +8,17 @@ import {
   MessageActionRowComponentBuilder,
   MessageComponentInteraction,
   ModalSubmitInteraction,
-} from "discord.js";
-import { WatchedThread } from "src/interfaces/thread";
-import { logger } from "../index";
-import { ErrorSeverity, handleApiError } from "./errorSystem";
-import { isThreadChannel } from "./threadUtils";
+} from "discord.js"
+import { WatchedThread } from "src/interfaces/thread"
+import { ErrorSeverity, handleApiError } from "./errorSystem"
+import { logger } from "./logger"
+import { isThreadChannel } from "./threadUtils"
 
 /**
  * Type representing any Discord interaction that can receive a reply
  */
 type ReplyableInteraction =
-  | CommandInteraction
-  | ButtonInteraction
-  | ModalSubmitInteraction
-  | MessageComponentInteraction;
+  CommandInteraction | ButtonInteraction | ModalSubmitInteraction | MessageComponentInteraction;
 
 /**
  * Safe checker for whether an interaction can still receive responses

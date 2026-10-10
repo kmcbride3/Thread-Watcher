@@ -6,20 +6,22 @@ import { safeLog } from "./logger";
 
 // Track process roles and initialization state
 export enum ProcessRole {
+  UNKNOWN = "unknown",
   MAIN = "main",
   SHARD = "shard",
-  UNKNOWN = "unknown",
 }
 
 export interface ProcessState {
   role: ProcessRole;
   shardId?: number;
   isInitialized: boolean;
+  readySignalSent: boolean; // Add flag to track if we've sent the ready signal
 }
 
 export const processState: ProcessState = {
   role: ProcessRole.UNKNOWN,
   isInitialized: false,
+  readySignalSent: false, // Add flag to track if we've sent the ready signal
 };
 
 // Avoid redundant environment logging

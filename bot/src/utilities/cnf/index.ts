@@ -178,86 +178,106 @@ function overrideDatabase(config: ConfigFile): ConfigFile["database"] {
 
 function overrideStatsServer(config: ConfigFile): ConfigFile["statsServer"] {
   return {
-    enabled: process.env.STATS_SERVER_ENABLED === "true" || config.statsServer.enabled || false,
+    enabled:
+      process.env.STATS_SERVER_ENABLED === "true" ||
+      (config.statsServer && config.statsServer.enabled) ||
+      false,
     port: process.env.STATS_SERVER_PORT
-      ? parseInt(process.env.STATS_SERVER_PORT, 10)
-      : config.statsServer.port || 3000,
+      ? parseInt(sanitizeInput(process.env.STATS_SERVER_PORT), 10)
+      : (config.statsServer && config.statsServer.port) || 3000,
   };
 }
 
-function overrideStye(config: ConfigFile): ConfigFile["style"] {
+function overrideStyleElement(
+  type: "error" | "success" | "info" | "warning" | "debug" | "trace" | "log",
+  config: ConfigFile,
+  defaultColor: ColorResolvable
+): BotStyle {
+  const safeType = sanitizeInput(type);
+  const envColorKey = `STYLE_${safeType.toUpperCase()}_COLOR`;
+  const envEmojiKey = `STYLE_${safeType.toUpperCase()}_EMOJI`;
+
+  // Verify the env var exists before accessing it
+  // We can safely access process.env with these keys because:
+  // 1. 'type' is restricted to a fixed set of string literals in the function signature
+  // 2. We sanitize the input with sanitizeInput() to prevent injection
+  // 3. The resulting keys follow a predictable format that we control
+  // eslint-disable-next-line security/detect-object-injection
+  const envColor = process.env[envColorKey]
+    ? // eslint-disable-next-line security/detect-object-injection
+      (sanitizeInput(process.env[envColorKey]) as ColorResolvable)
+    : null;
+  // eslint-disable-next-line security/detect-object-injection
+  const envEmoji = process.env[envEmojiKey] ? sanitizeInput(process.env[envEmojiKey]) : undefined;
+
+  // Safely access nested properties
+  const styleConfig = config.style || {};
+  // This is safe because safeType is limited to known values from the type parameter
+
+  const typeStyle = styleConfig[safeType as keyof typeof styleConfig] as BotStyle | undefined;
+
   return {
-    ...config.style,
-    error: {
-      color:
-        (process.env.STYLE_ERROR_COLOR as ColorResolvable) ||
-        config.style?.error?.color ||
-        Colors.Red,
-      emoji: process.env.STYLE_ERROR_EMOJI || config.style?.error?.emoji || undefined,
-    },
-    success: {
-      color:
-        (process.env.STYLE_SUCCESS_COLOR as ColorResolvable) ||
-        config.style?.success?.color ||
-        Colors.Green,
-      emoji: process.env.STYLE_SUCCESS_EMOJI || config.style?.success?.emoji || undefined,
-    },
-    info: {
-      color:
-        (process.env.STYLE_INFO_COLOR as ColorResolvable) ||
-        config.style?.info?.color ||
-        Colors.Blue,
-      emoji: process.env.STYLE_INFO_EMOJI || config.style?.info?.emoji || undefined,
-    },
-    warning: {
-      color:
-        (process.env.STYLE_WARNING_COLOR as ColorResolvable) ||
-        config.style?.warning?.color ||
-        Colors.Yellow,
-      emoji: process.env.STYLE_WARNING_EMOJI || config.style?.warning?.emoji || undefined,
-    },
-    debug: {
-      color:
-        (process.env.STYLE_DEBUG_COLOR as ColorResolvable) ||
-        config.style?.debug?.color ||
-        Colors.Orange,
-      emoji: process.env.STYLE_DEBUG_EMOJI || config.style?.debug?.emoji || undefined,
-    },
-    trace: {
-      color:
-        (process.env.STYLE_TRACE_COLOR as ColorResolvable) ||
-        config.style?.trace?.color ||
-        Colors.Grey,
-      emoji: process.env.STYLE_TRACE_EMOJI || config.style?.trace?.emoji || undefined,
-    },
-    log: {
-      color:
-        (process.env.STYLE_LOG_COLOR as ColorResolvable) ||
-        config.style?.log?.color ||
-        Colors.White,
-      emoji: process.env.STYLE_LOG_EMOJI || config.style?.log?.emoji || undefined,
-    },
+    color: envColor || (typeStyle ? typeStyle.color : null) || defaultColor,
+    emoji: envEmoji || (typeStyle ? typeStyle.emoji : undefined),
+  };
+}
+
+function overrideStyle(config: ConfigFile): ConfigFile["style"] {
+  return {
+    ...(config.style || {}),
+    error: overrideStyleElement("error", config, Colors.Red),
+    success: overrideStyleElement("success", config, Colors.Green),
+    info: overrideStyleElement("info", config, Colors.Blue),
+    warning: overrideStyleElement("warning", config, Colors.Yellow),
+    debug: overrideStyleElement("debug", config, Colors.Orange),
+    trace: overrideStyleElement("trace", config, Colors.Grey),
+    log: overrideStyleElement("log", config, Colors.White),
   };
 }
 
 function overrideMisc(config: ConfigFile): Partial<ConfigFile> {
+  // Safe type casting for enum values
+  let logLevel: "Quiet" | "Standard" | "Debug" | "Trace" = "Standard";
+  if (process.env.LOG_LEVEL) {
+    const sanitizedLogLevel = sanitizeInput(process.env.LOG_LEVEL);
+    if (["Quiet", "Standard", "Debug", "Trace"].includes(sanitizedLogLevel)) {
+      logLevel = sanitizedLogLevel as "Quiet" | "Standard" | "Debug" | "Trace";
+    }
+  } else if (config.logLevel) {
+    logLevel = config.logLevel;
+  }
+
+  // Safe parsing of shard count
+  let shardCount: number | "auto" = 1;
+  if (process.env.SHARD_COUNT) {
+    const sanitizedShardCount = sanitizeInput(process.env.SHARD_COUNT);
+    if (sanitizedShardCount === "auto") {
+      shardCount = "auto";
+    } else {
+      const parsedShardCount = parseInt(sanitizedShardCount, 10);
+      if (!isNaN(parsedShardCount) && parsedShardCount > 0) {
+        shardCount = parsedShardCount;
+      }
+    }
+  } else if (config.shardCount) {
+    shardCount = config.shardCount;
+  }
+
   return {
-    devServer: process.env.DEV_SERVER || config.devServer || "",
-    devServerInvite: process.env.DEV_SERVER_INVITE || config.devServerInvite || "",
-    logWebhook: process.env.LOG_WEBHOOK || config.logWebhook || "",
-    logLevel:
-      (process.env.LOG_LEVEL as "Quiet" | "Standard" | "Debug" | "Trace") ||
-      config.logLevel ||
-      "Standard",
+    devServer: process.env.DEV_SERVER
+      ? sanitizeInput(process.env.DEV_SERVER)
+      : config.devServer || "",
+    devServerInvite: process.env.DEV_SERVER_INVITE
+      ? sanitizeInput(process.env.DEV_SERVER_INVITE)
+      : config.devServerInvite || "",
+    logWebhook: process.env.LOG_WEBHOOK
+      ? sanitizeInput(process.env.LOG_WEBHOOK)
+      : config.logWebhook || "",
+    logLevel,
     logToFile: process.env.LOG_TO_FILE === "true" || config.logToFile || false,
     logBold: process.env.LOG_BOLD === "true" || config.logBold || false,
     logInverted: process.env.LOG_INVERTED === "true" || config.logInverted || false,
-    shardCount:
-      process.env.SHARD_COUNT === "auto"
-        ? "auto"
-        : process.env.SHARD_COUNT
-          ? parseInt(process.env.SHARD_COUNT, 10)
-          : config.shardCount || 1,
+    shardCount,
   };
 }
 
@@ -268,7 +288,7 @@ function overrideWithEnv(config: ConfigFile): ConfigFile {
     clientID: overrideClientID(config),
     database: overrideDatabase(config),
     statsServer: overrideStatsServer(config),
-    style: overrideStye(config),
+    style: overrideStyle(config),
     ...overrideMisc(config),
   };
 }
@@ -302,6 +322,6 @@ export function getConfig(): ConfigFile {
     return finalConfig;
   } catch (error) {
     console.error(`Error reading the config file: ${error}`);
-    throw new Error("Error reading the config file");
+    throw new Error("Error reading the config file", { cause: error });
   }
 }

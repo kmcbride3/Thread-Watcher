@@ -7,23 +7,24 @@ import {
   REST,
   ThreadAutoArchiveDuration,
   ThreadChannel,
-} from "discord.js";
-import { logger } from "../index";
-import { WatchedThread } from "../interfaces/thread";
-import { SERVICE_KEYS, serviceRegistry } from "../services";
-import { handleApiError } from "./apiErrorHandler";
+} from "discord.js"
+import { WatchedThread } from "../interfaces/thread"
+import { SERVICE_KEYS, serviceRegistry } from "../services"
+import { handleApiError } from "./apiErrorHandler"
+import { logger } from "./logger"
+import { rateLimitManager } from "./rateLimitManager"
 import {
   ensureVisibleThreads,
   monitorThreadHealth,
   registerThreadForHealthMonitoring,
   scheduleThreadMaintenanceTasks,
-} from "./routines/threadMonitoring";
+} from "./routines/threadMonitoring"
 import {
   hasPermissionInconsistency,
   isThreadCapableChannel,
   isThreadChannel,
   threadNeedsMaintenance,
-} from "./threadUtils";
+} from "./threadUtils"
 
 /**
  * Manages thread watching and unarchiving operations
@@ -62,13 +63,14 @@ export class ThreadManager {
    * Get the REST client, fetching a new one if not set
    * @private
    */
-  private getRestClient(): REST {
+  private async getRestClient(): Promise<REST> {
     if (this.restClient) return this.restClient;
 
     try {
       if (serviceRegistry.isAvailable(SERVICE_KEYS.CLIENT)) {
-        const client = serviceRegistry.get(SERVICE_KEYS.CLIENT);
-        return client.rest;
+        const client = await serviceRegistry.get(SERVICE_KEYS.CLIENT)
+        this.restClient = client.rest
+        return this.restClient;
       }
     } catch {
       logger.warn(
@@ -78,13 +80,14 @@ export class ThreadManager {
     }
 
     // Fallback to creating a new REST client
-    return new REST({ version: "10" });
+    this.restClient = new REST({ version: "10" })
+    return this.restClient;
   }
 
   /**
    * Start monitoring threads for auto-archiving
    */
-  public startThreadMonitoring(shardId?: number): void {
+  public async startThreadMonitoring(shardId?: number): Promise<void> {
     const effectiveShardId = shardId ?? 0;
 
     if (shardId !== undefined) {
@@ -112,19 +115,21 @@ export class ThreadManager {
         }, 500);
       }
 
-      // Set up recurring monitoring
-      this.threadMonitoringInterval = setInterval(
-        () => {
+      // Get shutdown manager to register interval
+      const shutdownManager = await serviceRegistry.get(SERVICE_KEYS.SHUTDOWN_MANAGER)
+
+      // Set up recurring monitoring and register with shutdown manager
+      this.threadMonitoringInterval = shutdownManager.registerInterval(
+        setInterval(() => {
           this.checkThreads();
-        },
-        60000 // Check once per minute for threads needing attention
+        }, 60000) // Check once per minute for threads needing attention
       );
 
       // Schedule the periodic maintenance tasks
       scheduleThreadMaintenanceTasks(Array.from(this.activeShards));
 
       // Log that we've activated thread monitoring (maintain this single INFO message)
-      logger.done(`Thread monitoring activated for Shard ${effectiveShardId}`, "Thread Manager");
+      logger.debug(`Thread monitoring activated for Shard ${effectiveShardId}`, "Thread Manager");
     } else {
       // Only log at debug level if monitoring was already running
       logger.debug(
@@ -144,7 +149,7 @@ export class ThreadManager {
       // Track this shard as inactive
       this.activeShards.delete(shardId);
       this.inactiveShards.add(shardId);
-      logger.debug(`Pausing thread monitoring for shard ${shardId}`, "Thread Manager");
+      logger.debug(`Pausing thread monitoring for Shard ${shardId}`, "Thread Manager");
 
       return;
     }
@@ -223,7 +228,7 @@ export class ThreadManager {
 
           // Try API join as fallback
           try {
-            const client = serviceRegistry.get(SERVICE_KEYS.CLIENT);
+            const client = await serviceRegistry.get(SERVICE_KEYS.CLIENT);
             await client.rest.put(`/channels/${thread.id}/thread-members/@me`, {});
             logger.debug(
               `Joined thread ${thread.name} (${thread.id}) via API method`,
@@ -257,7 +262,7 @@ export class ThreadManager {
     });
 
     logger.trace(
-      `Now watching thread ${thread.name} (${thread.id}) on shard ${shardId}`,
+      `Now watching thread ${thread.name} (${thread.id}) on Shard ${shardId}`,
       "Thread Manager"
     );
     return true;
@@ -293,7 +298,7 @@ export class ThreadManager {
       `Failed to create thread in channel ${channelId}`,
       async () => {
         // Use service registry to get client
-        const client = serviceRegistry.get(SERVICE_KEYS.CLIENT);
+        const client = await serviceRegistry.get(SERVICE_KEYS.CLIENT);
 
         const targetChannel = await client.channels.fetch(channelId);
         if (
@@ -358,7 +363,7 @@ export class ThreadManager {
           );
 
           // Only if standard method fails, fall back to direct REST API
-          const rest = this.getRestClient();
+          const rest = await this.getRestClient();
 
           const response = (await rest.post(`/channels/${channelId}/threads`, {
             body: {
@@ -459,6 +464,124 @@ export class ThreadManager {
   }
 
   /**
+   * Find and update threads that don't have a dueArchive time
+   * @private
+   */
+  private async updateThreadsWithoutDueArchive(): Promise<void> {
+    logger.debug("Checking for threads without dueArchive time", "Thread Manager")
+
+    // Find threads without dueArchive time
+    const threadsWithoutDueArchive = Array.from(this.watchedThreads.entries())
+      .filter(([_, threadData]) => threadData.watching && !threadData.dueArchive)
+      .map(([id]) => id)
+
+    if (threadsWithoutDueArchive.length === 0) {
+      return // No threads need updating
+    }
+
+    logger.info(
+      `Found ${threadsWithoutDueArchive.length} threads without dueArchive time`,
+      "Thread Manager"
+    )
+
+    if (
+      !serviceRegistry.isAvailable(SERVICE_KEYS.CLIENT) ||
+      !serviceRegistry.isAvailable(SERVICE_KEYS.DATABASE)
+    ) {
+      logger.warn(
+        "Client or database not available for thread archive time update",
+        "Thread Manager"
+      )
+      return
+    }
+
+    const client = await serviceRegistry.get(SERVICE_KEYS.CLIENT)
+    const db = await serviceRegistry.get(SERVICE_KEYS.DATABASE)
+    const currentTime = Math.floor(Date.now() / 1000)
+    const threadsNeedingImmediate: string[] = []
+
+    // Process in batches to avoid hitting rate limits
+    const batchSize = 10
+    for (let i = 0; i < threadsWithoutDueArchive.length; i += batchSize) {
+      const batch = threadsWithoutDueArchive.slice(i, i + batchSize)
+
+      // Process each thread in the batch
+      await Promise.all(
+        batch.map(async (threadId) => {
+          try {
+            await rateLimitManager.waitForRateLimit(`channels/${threadId}`)
+
+            // Fetch thread from Discord
+            const thread = (await client.channels
+              .fetch(threadId)
+              .catch(() => null)) as ThreadChannel
+
+            if (!thread || !isThreadChannel(thread)) {
+              // Thread doesn't exist anymore, mark for removal
+              this.watchedThreads.delete(threadId)
+              await db.deleteThread(threadId).catch(() => {
+                // Silent fail
+              })
+              logger.debug(
+                `Removed non-existent thread ${threadId} during dueArchive update`,
+                "Thread Manager"
+              )
+              return
+            }
+
+            // Calculate dueArchive time based on thread's auto-archive duration
+            const autoArchiveDuration =
+              thread.autoArchiveDuration || ThreadAutoArchiveDuration.OneDay
+            const dueArchiveTime = ThreadManager.calculateDueArchiveTime(
+              thread,
+              autoArchiveDuration
+            )
+
+            // Update thread data in memory
+            const threadData = this.watchedThreads.get(threadId)
+            if (threadData) {
+              threadData.dueArchive = dueArchiveTime
+              this.watchedThreads.set(threadId, threadData)
+            }
+
+            // Update database
+            await db.updateDueArchive(threadId, dueArchiveTime)
+            logger.debug(
+              `Updated dueArchive time for thread ${threadId} to ${new Date(dueArchiveTime * 1000).toISOString()}`,
+              "Thread Manager"
+            )
+
+            // Check if the thread needs immediate attention (already past due)
+            if (currentTime > dueArchiveTime || thread.archived) {
+              threadsNeedingImmediate.push(threadId)
+            }
+          } catch (error) {
+            logger.error(
+              `Error updating dueArchive for thread ${threadId}: ${error}`,
+              "Thread Manager"
+            )
+          }
+        })
+      )
+
+      // Wait a bit between batches to avoid rate limits
+      if (i + batchSize < threadsWithoutDueArchive.length) {
+        await new Promise((resolve) => setTimeout(resolve, 1000))
+      }
+    }
+
+    // Take immediate action for threads needing it
+    if (threadsNeedingImmediate.length > 0) {
+      logger.info(
+        `Taking immediate action for ${threadsNeedingImmediate.length} threads past their dueArchive time`,
+        "Thread Manager"
+      )
+      // Use existing maintenance logic for immediate action
+      await ensureVisibleThreads(Array.from(this.activeShards))
+    }
+  }
+
+  /**
    * Clean up threads that no longer exist on Discord
    * @private
    */
@@ -468,8 +591,8 @@ export class ThreadManager {
       return;
     }
 
-    const client = serviceRegistry.get(SERVICE_KEYS.CLIENT);
-    const db = serviceRegistry.get(SERVICE_KEYS.DATABASE);
+    const client = await serviceRegistry.get(SERVICE_KEYS.CLIENT)
+    const db = await serviceRegistry.get(SERVICE_KEYS.DATABASE);
 
     // Process in batches to avoid hitting rate limits
     const batchSize = 25;
@@ -553,9 +676,22 @@ export class ThreadManager {
   private static calculateArchiveTime(thread: ThreadChannel): number | undefined {
     if (!thread.autoArchiveDuration) return undefined;
 
-    // Convert minutes to milliseconds and add to last activity timestamp
-    const archiveDuration = thread.autoArchiveDuration * 60 * 1000;
-    return (thread.lastMessage?.createdTimestamp || Date.now()) + archiveDuration;
+    return ThreadManager.calculateDueArchiveTime(thread, thread.autoArchiveDuration)
+  }
+
+  private static calculateDueArchiveTime(
+    thread: ThreadChannel,
+    autoArchiveDuration: ThreadAutoArchiveDuration
+  ): number {
+    if (thread.archived) {
+      return Math.floor(Date.now() / 1000)
+    }
+
+    const archiveDurationSeconds = autoArchiveDuration * 60
+    const lastActivityTimestamp =
+      thread.lastMessage?.createdTimestamp ?? thread.createdTimestamp ?? Date.now()
+
+    return Math.floor(lastActivityTimestamp / 1000) + archiveDurationSeconds;
   }
 
   /**
@@ -568,7 +704,7 @@ export class ThreadManager {
         return;
       }
 
-      const db = serviceRegistry.get(SERVICE_KEYS.DATABASE);
+      const db = await serviceRegistry.get(SERVICE_KEYS.DATABASE);
       const threads = await db.getAllWatchedThreads();
       logger.trace(`Loaded ${threads.length} threads from database`, "Thread Manager");
 
@@ -578,7 +714,7 @@ export class ThreadManager {
       for (const thread of threads) {
         if (thread.watching) {
           // Calculate shardId at runtime for memory storage only
-          const calculatedShardId = ThreadManager.determineShardIdFromServer(thread.server);
+          const calculatedShardId = await ThreadManager.determineShardIdFromServer(thread.server);
 
           this.watchedThreads.set(thread.id, {
             id: thread.id,
@@ -608,15 +744,15 @@ export class ThreadManager {
       // Check for race condition where thread might have been added already
       if (this.isThreadWatched(id)) {
         logger.debug(`Thread ${id} already being watched, updating archive time`, "Thread Manager");
-        const db = serviceRegistry.get(SERVICE_KEYS.DATABASE);
+        const db = await serviceRegistry.get(SERVICE_KEYS.DATABASE);
         await db.updateDueArchive(id, dueArchive);
         return true;
       }
 
       // Calculate shardId for memory only
-      const calculatedShardId = ThreadManager.determineShardIdFromServer(server);
+      const calculatedShardId = await ThreadManager.determineShardIdFromServer(server);
 
-      const db = serviceRegistry.get(SERVICE_KEYS.DATABASE);
+      const db = await serviceRegistry.get(SERVICE_KEYS.DATABASE);
       // Add to database without shardId
       await db.insertThread(id, dueArchive, server);
 
@@ -645,7 +781,7 @@ export class ThreadManager {
    */
   public async removeThreadFromWatch(id: string, force = false): Promise<boolean> {
     try {
-      const db = serviceRegistry.get(SERVICE_KEYS.DATABASE);
+      const db = await serviceRegistry.get(SERVICE_KEYS.DATABASE);
       // Remove from database directly
       if (force) {
         await db.deleteThread(id);
@@ -678,14 +814,14 @@ export class ThreadManager {
    * Try to determine shardId from server ID without fetching
    * @private
    */
-  private static determineShardIdFromServer(serverId: string): number {
+  private static async determineShardIdFromServer(serverId: string): Promise<number> {
     try {
       if (!serviceRegistry.isAvailable(SERVICE_KEYS.CLIENT)) {
         return 0; // Default to shard 0 if client not available
       }
 
       // Use service registry to get client
-      const client = serviceRegistry.get(SERVICE_KEYS.CLIENT);
+      const client = await serviceRegistry.get(SERVICE_KEYS.CLIENT);
 
       if (client.shard) {
         // If client has a shard, use the first shard ID
@@ -717,7 +853,7 @@ export class ThreadManager {
       this.pendingMaintenance = true;
 
       // Check for problematic threads and register them for monitoring
-      const client = serviceRegistry.get(SERVICE_KEYS.CLIENT);
+      const client = await serviceRegistry.get(SERVICE_KEYS.CLIENT);
 
       // Get a sample of threads to check (limit to avoid overloading)
       const MAX_THREADS_TO_CHECK = 100;
@@ -755,21 +891,26 @@ export class ThreadManager {
    * Set up periodic cleanup to ensure memory state matches database state
    * This helps fix any potential inconsistencies between memory and database
    */
-  private setupThreadCleanup(): void {
+  private async setupThreadCleanup(): Promise<void> {
     // Clean up existing interval if it exists
     if (this.cleanupInterval) {
       clearInterval(this.cleanupInterval);
     }
 
-    // Run cleanup every 30 minutes
-    this.cleanupInterval = setInterval(
-      () => {
-        this.verifyThreadConsistency().catch((err) =>
-          logger.error(`Error in thread consistency check: ${err}`)
-        );
-      },
-      30 * 60 * 1000
-    ); // 30 minutes
+    // Get shutdown manager to register the interval
+    const shutdownManager = await serviceRegistry.get(SERVICE_KEYS.SHUTDOWN_MANAGER)
+
+    // Run cleanup every 30 minutes and register with shutdown manager
+    this.cleanupInterval = shutdownManager.registerInterval(
+      setInterval(
+        () => {
+          this.verifyThreadConsistency().catch((err) =>
+            logger.error(`Error in thread consistency check: ${err}`)
+          )
+        },
+        30 * 60 * 1000
+      ) // 30 minutes
+    );
   }
 
   /**
@@ -781,7 +922,7 @@ export class ThreadManager {
     }
 
     try {
-      const db = serviceRegistry.get(SERVICE_KEYS.DATABASE);
+      const db = await serviceRegistry.get(SERVICE_KEYS.DATABASE);
       const dbThreads = await db.getAllWatchedThreads();
 
       // Create maps for easier comparison
@@ -839,9 +980,198 @@ export class ThreadManager {
       (thread) => thread.server === serverId && thread.watching
     );
     logger.debug(
-      `Found ${threads.size} threads for server ${serverId} of ${this.watchedThreads.size} total threads`
+      `Found ${threads.size} threads for Server ${serverId} of ${this.watchedThreads.size} total threads`
     );
     return threads;
+  }
+
+  /**
+   * Check all threads for a specific server and take immediate action for those past due
+   * Call this when the bot joins a server to ensure threads are unarchived
+   * @param serverId The server ID to check threads for
+   */
+  public async checkThreadsForServer(serverId: string): Promise<void> {
+    if (
+      !serviceRegistry.isAvailable(SERVICE_KEYS.DATABASE) ||
+      !serviceRegistry.isAvailable(SERVICE_KEYS.CLIENT)
+    ) {
+      logger.warn("Services not available for server thread check", "Thread Manager")
+      return
+    }
+
+    try {
+      // Get threads for this server
+      const db = await serviceRegistry.get(SERVICE_KEYS.DATABASE)
+      const serverThreads = await db.getThreads(serverId)
+
+      if (serverThreads.length === 0) {
+        logger.debug(`No threads to check for Server ${serverId}`, "Thread Manager")
+        return
+      }
+
+      logger.debug(
+        `Checking ${serverThreads.length} threads for Server ${serverId} upon join`,
+        "Thread Manager"
+      )
+
+      // Find threads that need dueArchive time updates - specifically for this server
+      const threadsWithoutDueArchive = serverThreads.filter(
+        (thread) => thread.watching && !thread.dueArchive
+      )
+
+      if (threadsWithoutDueArchive.length > 0) {
+        logger.info(
+          `Found ${threadsWithoutDueArchive.length} threads without dueArchive time in Server ${serverId}`,
+          "Thread Manager"
+        )
+
+        // Update threads without dueArchive time for this specific server
+        await this.updateThreadsWithoutDueArchiveForServer(serverId, threadsWithoutDueArchive)
+      }
+
+      // Find threads that are being watched and need maintenance
+      const threadsNeedingMaintenance = serverThreads.filter((thread) => {
+        // Check if the thread is being watched
+        if (!thread.watching) return false
+
+        // Check if it has a dueArchive time
+        if (!thread.dueArchive) return true // No dueArchive means it needs checking
+
+        // Check if it's past due
+        const currentTime = Math.floor(Date.now() / 1000)
+        return currentTime > thread.dueArchive
+      })
+
+      if (threadsNeedingMaintenance.length === 0) {
+        logger.debug(`No threads need maintenance for Server ${serverId}`, "Thread Manager")
+        return
+      }
+
+      logger.info(
+        `Found ${threadsNeedingMaintenance.length} threads needing maintenance in Server ${serverId}`,
+        "Thread Manager"
+      )
+
+      // Ensure all these threads are in our memory collection
+      for (const thread of threadsNeedingMaintenance) {
+        if (!this.watchedThreads.has(thread.id)) {
+          // Calculate shardId for memory storage
+          const calculatedShardId = await ThreadManager.determineShardIdFromServer(serverId)
+          this.watchedThreads.set(thread.id, {
+            id: thread.id,
+            server: serverId,
+            watching: true,
+            dueArchive: thread.dueArchive,
+            shardId: calculatedShardId,
+          })
+        }
+      }
+
+      // Get the active shard for this server
+      const shardId = await ThreadManager.determineShardIdFromServer(serverId)
+
+      // Run maintenance to unarchive threads as needed
+      await ensureVisibleThreads([shardId])
+
+      logger.info(`Completed maintenance check for Server ${serverId}`, "Thread Manager")
+    } catch (error) {
+      logger.error(`Error checking threads for Server ${serverId}: ${error}`, "Thread Manager")
+    }
+  }
+
+  /**
+   * Update threads without dueArchive time for a specific server
+   * @private
+   */
+  private async updateThreadsWithoutDueArchiveForServer(
+    serverId: string,
+    threadsToUpdate: WatchedThread[]
+  ): Promise<void> {
+    if (threadsToUpdate.length === 0) return
+
+    logger.debug(
+      `Updating ${threadsToUpdate.length} threads without dueArchive time for Server ${serverId}`,
+      "Thread Manager"
+    )
+
+    if (
+      !serviceRegistry.isAvailable(SERVICE_KEYS.CLIENT) ||
+      !serviceRegistry.isAvailable(SERVICE_KEYS.DATABASE)
+    ) {
+      logger.warn(
+        "Client or database not available for thread archive time update",
+        "Thread Manager"
+      )
+      return
+    }
+
+    const client = await serviceRegistry.get(SERVICE_KEYS.CLIENT)
+    const db = await serviceRegistry.get(SERVICE_KEYS.DATABASE)
+
+    // Process in batches to avoid hitting rate limits
+    const batchSize = 5
+    for (let i = 0; i < threadsToUpdate.length; i += batchSize) {
+      const batch = threadsToUpdate.slice(i, i + batchSize)
+
+      // Process each thread in the batch
+      await Promise.all(
+        batch.map(async (threadData) => {
+          try {
+            await rateLimitManager.waitForRateLimit(`channels/${threadData.id}`)
+
+            // Fetch thread from Discord
+            const thread = (await client.channels
+              .fetch(threadData.id)
+              .catch(() => null)) as ThreadChannel
+
+            if (!thread || !isThreadChannel(thread)) {
+              // Thread doesn't exist anymore, mark for removal
+              this.watchedThreads.delete(threadData.id)
+              await db.deleteThread(threadData.id).catch(() => {
+                // Silent fail
+              })
+              logger.debug(
+                `Removed non-existent thread ${threadData.id} during server join`,
+                "Thread Manager"
+              )
+              return
+            }
+
+            // Calculate dueArchive time based on thread's auto-archive duration
+            const autoArchiveDuration =
+              thread.autoArchiveDuration || ThreadAutoArchiveDuration.OneDay
+            const dueArchiveTime = ThreadManager.calculateDueArchiveTime(
+              thread,
+              autoArchiveDuration
+            )
+
+            // Update thread data in memory
+            const memoryThreadData = this.watchedThreads.get(threadData.id)
+            if (memoryThreadData) {
+              memoryThreadData.dueArchive = dueArchiveTime
+              this.watchedThreads.set(threadData.id, memoryThreadData)
+            }
+
+            // Update database
+            await db.updateDueArchive(threadData.id, dueArchiveTime)
+            logger.debug(
+              `Updated dueArchive time for thread ${threadData.id} to ${new Date(dueArchiveTime * 1000).toISOString()} on server join`,
+              "Thread Manager"
+            )
+          } catch (error) {
+            logger.error(
+              `Error updating dueArchive for thread ${threadData.id}: ${error}`,
+              "Thread Manager"
+            )
+          }
+        })
+      )
+
+      // Wait a bit between batches to avoid rate limits
+      if (i + batchSize < threadsToUpdate.length) {
+        await new Promise((resolve) => setTimeout(resolve, 1000))
+      }
+    }
   }
 }
 

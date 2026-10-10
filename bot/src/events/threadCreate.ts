@@ -1,14 +1,14 @@
-import { Events, ThreadChannel } from "discord.js";
-import { logger } from "../index";
-import { SERVICE_KEYS, serviceRegistry } from "../services";
-import { ErrorSeverity, handleApiError } from "../utilities/errorSystem";
-import { rateLimitManager } from "../utilities/rateLimitManager";
-import { threadManager } from "../utilities/threadManager";
+import { Events, ThreadChannel } from "discord.js"
+import { SERVICE_KEYS, serviceRegistry } from "../services"
+import { ErrorSeverity, handleApiError } from "../utilities/errorSystem"
+import { logger } from "../utilities/logger"
+import { rateLimitManager } from "../utilities/rateLimitManager"
+import { threadManager } from "../utilities/threadManager"
 import {
   dueArchiveTimestamp,
   isThreadChannel,
   threadShouldBeWatched,
-} from "../utilities/threadUtils";
+} from "../utilities/threadUtils"
 
 export default {
   name: Events.ThreadCreate,
@@ -31,7 +31,7 @@ export default {
           return [];
         }
 
-        const db = serviceRegistry.get(SERVICE_KEYS.DATABASE, {
+        const db = await serviceRegistry.get(SERVICE_KEYS.DATABASE, {
           errorContext: `ThreadCreate:getDatabase(${thread.guildId})`,
         });
 

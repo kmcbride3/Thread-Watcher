@@ -1,8 +1,8 @@
-import { Events, ThreadChannel } from "discord.js";
-import { logger } from "../index";
-import { ErrorSeverity, handleApiError } from "../utilities/errorSystem";
-import { threadManager } from "../utilities/threadManager";
-import { isThreadChannel } from "../utilities/threadUtils";
+import { Events, ThreadChannel } from "discord.js"
+import { ErrorSeverity, handleApiError } from "../utilities/errorSystem"
+import { logger } from "../utilities/logger"
+import { threadManager } from "../utilities/threadManager"
+import { isThreadChannel } from "../utilities/threadUtils"
 
 export default {
   name: Events.ThreadDelete,

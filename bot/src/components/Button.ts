@@ -5,17 +5,17 @@ import {
   Collection,
   ComponentEmojiResolvable,
   MessageFlagsBitField,
-} from "discord.js";
-import { logger } from "../index";
-import TwGenericComponent from "../interfaces/genericComponent";
-import { handleApiError } from "../utilities/apiErrorHandler";
+} from "discord.js"
+import TwGenericComponent from "../interfaces/genericComponent"
+import { handleApiError } from "../utilities/apiErrorHandler"
+import { logger } from "../utilities/logger"
 
 type buttonOnClick = (interaction: ButtonInteraction) => void;
 export type buttonFilter = (interaction: ButtonInteraction) => boolean;
 
 const ButtonInteractionQueue: Collection<string, TwButton> = new Collection<string, TwButton>();
 
-export { ButtonInteractionQueue };
+export { ButtonInteractionQueue }
 
 /**
  * I am truly the smartest brogrammer that has ever lived
